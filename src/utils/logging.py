@@ -20,7 +20,7 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     logging.Logger
         The logger with the given name and level.
     """
-    logger = logging.getLogger(name)
+    logger = logging.getLogger(__name__)
     if logger.hasHandlers():  # Check if the logger already has handlers
         logger.handlers.clear()  # Clear the default handlers
     logger.setLevel(level)
