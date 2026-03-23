@@ -6,11 +6,11 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 
 import develop.posthoc_ema as phema
-from data.datasets import TrainDataset
-from model.model_utils import load_model
-from training.train_utils import edm_loss
+from data.sets.datasets import TrainDataset
+from models.utils import load_model
+from train.utils import edm_loss
 from utils.paths import MODEL_PARENT, ANALYSIS_PARENT, LOFAR_SUBSETS
-from utils.device_utils import distribute_model, set_visible_devices
+from utils.devices import distribute_model, set_visible_devices
 
 # Limit GPUs to 1
 dev_ids = set_visible_devices(1)

@@ -20,7 +20,7 @@ from astropy.coordinates import SkyCoord
 
 import bdsf
 import utils.paths as paths
-import utils.logging as logging
+import utils.my_logging as my_logging
 from maps.telsim_utils import *
 from analysis.bdsf_on_map import bdsf_on_model
 from maps.map_utils import lofar_num2nu, run_command_with_logging
@@ -65,7 +65,7 @@ class TelescopeSimulator:
     def __init__(self, config_name):
 
         # Logger
-        self.logger = logging.get_logger("TelSim")
+        self.logger = my_logging.get_logger("TelSim")
 
         # Read config
         self.config_file = TelescopeSimulator.parse_config_name(config_name)

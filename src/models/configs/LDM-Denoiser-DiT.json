@@ -1,0 +1,33 @@
+{
+    "model_name": "LDM-Denoiser-DiT-XL4",
+    "model_class": "Denoiser",
+    "backbone": "DiT-XL/4",
+    "dataset": "micromap-encodings-256",
+    "override_files": true,
+    "pickup": false,
+    "checkpoint": "last",
+    "tune_lr": false,
+    "overfit_batch": false,
+    "accumulate_grad_batches": 2,
+    "model_config" : {
+        "input_size": 64,
+        "in_channels": 7,
+        "out_channels": 3
+    },
+    "train_config": {
+        "batch_size": 32,
+        "iterations": 20000,
+        "learning_rate": 1e-4,
+        "ema_rate": 0.99,
+        "P_mean": -1.2,
+        "P_std": 1.2,
+        "snapshot_interval": 1000,
+        "log_interval": 1,
+        "val_every": 200,
+        "val_batches": 64,
+        "validate_ema": true,
+        "devices": [
+            2, 3
+        ]
+    }
+}

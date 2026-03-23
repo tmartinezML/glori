@@ -2,9 +2,9 @@ import h5py
 import numpy as np
 
 import utils.paths as paths
-import data.segment as seg
-from data.datasets import EvaluationDataset
-from data.transforms import minmax_scale_batch
+import data.trf.segment as seg
+from data.sets.datasets import EvaluationDataset
+from data.trf.functional import minmax_scale_batch
 
 # Load the dataset
 dset_file = paths.LOFAR_SUBSETS["200p"]

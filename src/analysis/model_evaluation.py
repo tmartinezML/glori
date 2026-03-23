@@ -11,13 +11,13 @@ from torch.utils.data import DataLoader, Dataset
 import utils.paths as paths
 import analysis.stats_utils as stats
 import analysis.image_metrics as imet
-from plotting.metric_plots import (
+from plotting.metrics import (
     pixel_metrics_plot,
     shape_metrics_plot,
 )
-from data.datasets import LOFARDataset
-from plotting.plot_utils import plot_collection
-from utils.device_utils import visible_gpus_by_space
+from data.sets.datasets import LOFARDataset
+from plotting.utils import plot_collection
+from utils.devices import visible_gpus_by_space
 from develop.fid_score import calculate_fid_given_paths, save_fid_stats
 
 

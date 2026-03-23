@@ -1,21 +1,20 @@
+import logging
 import os
 import sys
 import signal
 import shutil
 import psutil
 import pickle
-import logging
 import argparse
 import warnings
 import tempfile
 import traceback
-import functools
 import multiprocessing as mp
 from pathlib import Path
 from numbers import Number
 from collections.abc import Iterable
-from contextlib import contextmanager
 from concurrent.futures import ProcessPoolExecutor as PPEx
+
 
 import bdsf
 import numpy as np
@@ -23,51 +22,448 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from astropy.io import fits
+from astropy.wcs import WCS
+from astropy.coordinates import SkyCoord
+from scipy.optimize import linear_sum_assignment
+from photutils.aperture import SkyEllipticalAperture
+from astropy import units as u
 
+from utils.devices import is_jupyter
 import utils.paths as paths
-from data.datasets import EvaluationDataset
+from analysis.sourcefind import run_tiered_bdsf, flatten
+from data.utils import (
+    load_fits_image,
+    load_fits_catalog,
+)
 
 
-def disable_logging(func):
-    @functools.wraps(func)
-    #
-    def wrapper(*args, **kwargs):
-        logging.disable(logging.CRITICAL + 1)
-        result = func(*args, **kwargs)
-        logging.disable(logging.NOTSET)
-        return result
-
-    return wrapper
+if is_jupyter():
+    bdsf.functions.getTerminalSize = lambda: (80, 24)  # Mock terminal size
 
 
-# decorater used to block function printing to the console
-def redirect_printing(func):
-    def func_wrapper(*args, **kwargs):
-        # Redirect all printing to the console
-        sys.stdout = open(os.devnull, "w")
-        # call the method in question
-        try:
-            value = func(*args, **kwargs)
-        except RuntimeError as e:
-            sys.stdout = sys.__stdout__
-            raise e
-        # enable all printing to the console
-        sys.stdout = sys.__stdout__
-        # pass the return value of the method back
-        return value
+import numpy as np
+import pandas as pd
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+from scipy.optimize import linear_sum_assignment
 
-    return func_wrapper
+DEFAULT_KWARGS = dict(
+    thresh_isl=3.0,
+    thresh_pix=4.5,  # 4.0 in the paper
+    thresh=None,
+    rms_box=(150, 15),
+    rms_map=True,
+    mean_map="zero",
+    ini_method="intensity",
+    adaptive_rms_box=True,
+    adaptive_thresh=150,
+    rms_box_bright=(60, 15),
+    group_by_isl=False,
+    group_tol=10.0,
+    output_opts=False,
+    output_all=False,
+    atrous_do=True,
+    atrous_jmax=4,
+    flagging_opts=True,
+    flag_maxsize_fwhm=0.5,
+    advanced_opts=True,
+    blank_limit=None,
+    frequency=144e6,
+    debug=False,
+    quiet=False,
+)
 
 
-# @disable_logging
-# @block_printing
+def match_catalogs(cat1_df, cat2_df, thr_arcsec=50, ra_col="RA", dec_col="DEC"):
+    """
+    Match two catalogs (pandas DataFrames) using Hungarian algorithm, avoiding duplicate matches.
+
+    Parameters
+    ----------
+    cat1_df, cat2_df : pandas.DataFrame
+        Must contain RA/Dec columns (in degrees).
+    max_radius : Quantity
+        Maximum allowed separation for a match.
+    ra_col, dec_col : str
+        Column names for RA/Dec in the dataframes.
+
+    Returns
+    -------
+    dict
+        {
+            "matched_cat1": matched_cat1_df,
+            "matched_cat2": matched_cat2_df,
+            "unmatched_cat1": unmatched_cat1_df,
+            "unmatched_cat2": unmatched_cat2_df,
+            "match_mask": match_mask,
+            "idx": idx,
+            "d2d": d2d
+        }
+    """
+    # Convert to SkyCoord
+    cat1_coords = SkyCoord(
+        cat1_df[ra_col].values * u.deg, cat1_df[dec_col].values * u.deg
+    )
+    cat2_coords = SkyCoord(
+        cat2_df[ra_col].values * u.deg, cat2_df[dec_col].values * u.deg
+    )
+
+    # Compute separation matrix in arcsec
+    sep_matrix = cat1_coords[:, None].separation(cat2_coords[None, :]).arcsec
+
+    # Pad to square for Hungarian algorithm
+    n1, n2 = sep_matrix.shape
+    max_size = max(n1, n2)
+    cost_matrix = np.full((max_size, max_size), 1e9)
+    cost_matrix[:n1, :n2] = sep_matrix
+
+    # Hungarian solve
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+    # Initialize match arrays
+    idx = np.full(n1, np.nan)  # index in cat2 for each cat1
+    d2d = np.full(n1, np.nan)  # separation in arcsec
+
+    for r, c in zip(row_ind, col_ind):
+        if r < n1 and c < n2:
+            idx[r] = c
+            d2d[r] = sep_matrix[r, c]
+
+    # Match mask based on thr_arcsec
+    match_mask = d2d <= thr_arcsec
+
+    # Matched DataFrames
+    matched_cat1 = cat1_df[match_mask].reset_index(drop=True)
+    matched_idx = idx[match_mask].astype(int)
+    matched_cat2 = cat2_df.iloc[matched_idx].reset_index(drop=True)
+
+    # Unmatched DataFrames
+    unmatched_cat1 = cat1_df[~match_mask].reset_index(drop=True)
+    unmatched_idx_cat2 = np.setdiff1d(np.arange(n2), matched_idx)
+    unmatched_cat2 = cat2_df.iloc[unmatched_idx_cat2].reset_index(drop=True)
+
+    # Convert d2d to astropy Quantity (arcsec)
+    d2d_quantity = d2d * u.arcsec
+
+    return {
+        "matched_cat1": matched_cat1,
+        "matched_cat2": matched_cat2,
+        "unmatched_cat1": unmatched_cat1,
+        "unmatched_cat2": unmatched_cat2,
+        "match_mask": match_mask,
+        "idx": idx,
+        "d2d": d2d_quantity,
+    }
+
+
+def match_catalogs_nn(cat1, cat2, thr_arcsec=12):
+    """
+    Match two catalogs based on RA and DEC within a given threshold in arcseconds.
+    Returns a DataFrame with matched sources and their differences.
+    """
+    cat1_coords = SkyCoord(ra=cat1.RA.values, dec=cat1.DEC.values, unit="deg")
+    cat2_coords = SkyCoord(ra=cat2.RA.values, dec=cat2.DEC.values, unit="deg")
+
+    idx, d2d, _ = cat1_coords.match_to_catalog_sky(cat2_coords)
+    match_mask = d2d.arcsec < thr_arcsec
+    # If there are duplicates, keep the one with the smallest distance
+    i, c = np.unique(idx[match_mask], return_counts=True)
+    if np.any(c > 1):
+        # If there are duplicates, keep the one with the smallest distance
+        match_mask[np.argwhere(np.isin(idx, i[c > 1]))] = False
+        i_smallest = np.array(
+            [np.argwhere(idx == ii)[np.argmin(d2d[ii])] for ii in i[c > 1]]
+        )
+        # Remove duplicates from the match mask
+        match_mask[i_smallest] = True
+
+    match_mask_cat2 = np.zeros(len(cat2), dtype=bool)
+    match_mask_cat2[idx[match_mask]] = True
+    matched_cat1 = cat1[match_mask]
+    matched_cat2 = cat2[match_mask_cat2]
+    unmatched_cat1 = cat1[~match_mask]
+    unmatched_cat2 = cat2[~match_mask_cat2]
+    return {
+        "matched_cat1": matched_cat1,
+        "matched_cat2": matched_cat2,
+        "unmatched_cat1": unmatched_cat1,
+        "unmatched_cat2": unmatched_cat2,
+        "match_mask": match_mask,
+        "idx": idx,
+        "d2d": d2d,
+    }
+
+
+def tiered_bdsf_wrapper(img, wcs=None, tmpdir=paths.ANALYSIS_PARENT / "tmp", **kwargs):
+    """
+    Wrapper for the tiered BDSF source finding algorithm.
+    """
+    # Create output directory
+    with tempfile.NamedTemporaryFile(dir=tmpdir, suffix=".fits") as tmpfile:
+
+        img_fpath = tmpfile.name
+
+        # Save image to fits file
+        hdu = fits.PrimaryHDU(data=img, header=fits.Header(make_header_dict(wcs=wcs)))
+        hdu.writeto(img_fpath, overwrite=True)
+
+        # Run BDSF on the image
+        srl_f, gaul_f, model_f, resid_f = run_tiered_bdsf(
+            img_fpath, img_fpath, **kwargs
+        )
+
+        # Make output dict
+        srl = load_fits_catalog(srl_f)
+        gaul = load_fits_catalog(gaul_f)
+        # Bring to desired units
+        for cat in [srl, gaul]:
+            cat["Total_flux"] *= 1e3
+            cat["Peak_flux"] *= 1e3
+            cat["Maj"] *= 3600  # Convert to arcsec
+
+        with fits.open(model_f) as hdul:
+            hdu_flat = flatten(hdul)
+            model_img = hdu_flat.data
+            wcs = WCS(hdu_flat.header, naxis=2)
+
+        resid_img, _ = load_fits_image(resid_f, get_wcs=False)
+
+        output = {
+            "input_image": img,
+            "catalogs": {"srl": srl, "gaul": gaul},
+            "model_gaus_arr": model_img.squeeze(),
+            "resid_gaus_arr": resid_img.squeeze(),
+            "wcs": wcs,
+        }
+
+    # Remove files
+    os.remove(srl_f)
+    os.remove(gaul_f)
+    os.remove(model_f)
+    os.remove(resid_f)
+    for f in Path(tmpdir).glob(f"{Path(img_fpath).stem}*"):
+        f.unlink()
+
+    return output
+
+
+def multistep_bdsf_on_image(
+    img,
+    snr_thresh_bright=150,
+    mean_rms_maps=None,
+    tmpdir=paths.ANALYSIS_PARENT / "tmp",
+    wcs=None,
+    **kw,
+):
+    # Replicated algorithm from Shimwell+25, App. A
+    default_kwargs = DEFAULT_KWARGS.copy()
+    default_kwargs.update(kw)
+
+    # Step 1 and 2 are in order to obtain the deep rms map
+    if mean_rms_maps is None:
+        # Step 1: Run bdsf with settings on image
+        res1 = bdsf_on_image(img, wcs=wcs, **default_kwargs)
+
+        # Step 2: Make residual image that keeps bright sources:
+        # -- A: Construct mask for bright sources
+        bright_mask = np.zeros_like(res1.resid_gaus_arr)
+        if wcs is None:
+            wcs = WCS(res1.wcs_obj.to_header())
+        for src in res1.sources:
+            if src.peak_flux_max / src.rms_isl >= snr_thresh_bright:
+                for g in src.gaussians:
+                    # Get gaussian paremeters
+                    ra, dec = g.centre_sky
+                    maj, min, pa = g.size_sky
+                    # Construct mask and add to bright_mask image
+                    position = SkyCoord(ra=ra, dec=dec, unit="deg")
+                    aper = SkyEllipticalAperture(
+                        position,
+                        1.5 * maj * u.degree,
+                        1.5 * min * u.degree,
+                        pa * u.degree,
+                    )
+                    bright_mask += (
+                        aper.to_pixel(wcs).to_mask().to_image(bright_mask.shape[-2:])
+                    )
+        bright_mask = (bright_mask != 0).astype(np.float32).T
+        # -- B: Remove bright sources from model image
+        model_no_bright = res1.model_gaus_arr.T * (1 - bright_mask)
+        # -- C: Remove that from the original image to obtain residual image
+        #       with bright sources in it.
+        resid_map_with_bright = res1.image_arr.squeeze().T - model_no_bright
+
+        # Step 3: Run bdsf on the residual image with bright sources,
+        # which gives a deeper rms map
+        rms_deep_res = run_rms_map(resid_map_with_bright, wcs=wcs, **default_kwargs)
+        rms_map_deep = rms_deep_res.rms_arr.T
+        # mean_map_deep = rms_deep_res.mean_arr.T
+        mean_map_deep = np.zeros_like(rms_map_deep)
+
+    else:
+        mean_map_deep, rms_map_deep = (m.squeeze() for m in mean_rms_maps)
+
+    # Step 4: Run bdsf on the image with the deeper rms map
+    res2 = bdsf_on_image(
+        img,
+        wcs=wcs,
+        tmpdir=tmpdir,
+        mean_rms_maps=(mean_map_deep, rms_map_deep),
+        **default_kwargs,
+    )
+
+    # Step 5: Run bdsf again on deep residual image
+    resid_map_deep = res2.resid_gaus_arr.copy()
+    default_kwargs.update(dict(thresh_pix=10, flag_maxsize_bm=100))
+    res3 = bdsf_on_image(
+        resid_map_deep.T,
+        wcs=wcs,
+        tmpdir=tmpdir,
+        mean_rms_maps=(mean_map_deep, rms_map_deep),
+        **default_kwargs,
+    )
+
+    # Step 6: Return list of sources and catalogs
+    catalogs = {
+        cat_type: pd.concat(
+            [catalogs_from_bdsf(r)[cat_type] for r in [res2, res3]], ignore_index=True
+        ).reset_index(drop=True)
+        for cat_type in ["gaul", "srl"]
+    }
+
+    # Put everything into output dict
+    output = {
+        "catalogs": catalogs,
+        "model_gaus_arr": res2.model_gaus_arr + res3.model_gaus_arr,
+        "resid_gaus_arr": res3.resid_gaus_arr,
+        "wcs": wcs,
+    }
+    return output
+
+
+def save_multistep_output(output, name, out_parent=paths.ANALYSIS_PARENT / "bdsf"):
+    out_dir = out_parent / name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save image as npy
+    np.save(out_dir / "input_image.npy", output["input_image"])
+
+    # Save products as fits
+    for key in ["model_gaus_arr", "resid_gaus_arr"]:
+        fpath = out_dir / f"{key}.fits"
+        hdu = fits.PrimaryHDU(data=output[key], header=output["wcs"].to_header())
+        hdu.writeto(fpath, overwrite=True)
+
+    # Save catalogs as parquet
+    for cat_type, catalog in output["catalogs"].items():
+        fpath = out_dir / f"catalog_{cat_type}.parquet"
+        if fpath.exists():
+            fpath.unlink()
+        catalog.to_parquet(fpath, index=False)
+
+
+def load_multistep_output(
+    name, out_parent=paths.ANALYSIS_PARENT / "bdsf", empty_is_err=True
+):
+    # If name is absolute path, out_parent will be ignored in the following line
+    out_dir = out_parent / name
+    if not out_dir.exists():
+        if empty_is_err:
+            raise FileNotFoundError(f"Output directory {out_dir} does not exist.")
+        else:
+            # Return dict with all entries None
+            d = {
+                k: None
+                for k in [
+                    "input_image",
+                    "model_gaus_arr",
+                    "resid_gaus_arr",
+                    "wcs",
+                ]
+            }
+            d["catalogs"] = {cat_type: None for cat_type in ["gaul", "srl"]}
+            return d
+
+    output = {}
+
+    # Load input image
+    img_fpath = out_dir / "input_image.npy"
+    if not img_fpath.exists():
+        raise FileNotFoundError(f"Input image {img_fpath} does not exist.")
+    output["input_image"] = np.load(img_fpath)
+
+    # Load images from fits
+    for key in ["model_gaus_arr", "resid_gaus_arr"]:
+        fpath = out_dir / f"{key}.fits"
+        with fits.open(fpath) as hdul:
+            output[key] = hdul[0].data
+
+    # Load catalogs from parquet
+    output["catalogs"] = {
+        cat_type: pd.read_parquet(out_dir / f"catalog_{cat_type}.parquet")
+        for cat_type in ["gaul", "srl"]
+    }
+
+    # Load WCS from fits header
+    with fits.open(out_dir / "model_gaus_arr.fits") as hdul:
+        output["wcs"] = WCS(hdul[0].header)
+
+    return output
+
+
+def run_rms_map(
+    img,
+    tmpdir=paths.ANALYSIS_PARENT / "tmp",
+    beam_size_arcsec=6,
+    wcs=None,
+    set_quiet=True,
+    **bdsf_kwargs,
+):
+
+    img = img.squeeze()
+
+    # Create a temporary file
+    with tempfile.NamedTemporaryFile(suffix=".fits", dir=tmpdir) as f:
+
+        # Write the hdu to tmp fits file
+        write_to_fits(img, f.name, wcs=wcs)
+
+        # make bdsf op list
+        op_list = [
+            bdsf.readimage.Op_readimage,
+            bdsf.collapse.Op_collapse,
+            bdsf.preprocess.Op_preprocess,
+            bdsf.rmsimage.Op_rmsimage,
+        ]
+
+        img = bdsf.image.Image({"filename": f.name})
+        logging.USERINFO = logging.INFO + 1
+        img.log = str(Path(f.name).with_suffix(".pybdsf.log"))
+        img.opts.quiet = set_quiet
+        img.opts.stopat = "isl"
+        img.opts.beam = (beam_size_arcsec / 3600, beam_size_arcsec / 3600, 0)
+        if len(bdsf_kwargs) > 0:
+            bdsf.interface.set_pars(img, **bdsf_kwargs)
+        bdsf._run_op_list(img, op_list)
+
+        # os.remove(f"{f.name}.pybdsf.log")
+
+    return img
+
+
+
+
+
 def bdsf_on_image(
     img: np.ndarray,
-    ang_size=120,
-    px_size=80,
+    wcs=None,
+    mean_rms_maps=None,
+    px_size_arcsec=1.5,
+    beam_size_arcsec=6,  # 6 arcsec
     id=None,
     tmpdir=paths.ANALYSIS_PARENT / "tmp",
     logdir=None,
+    add_noise=False,
     **bdsf_kwargs,
 ):
     """
@@ -75,40 +471,30 @@ def bdsf_on_image(
     """
     img = img.squeeze()
 
+    if mean_rms_maps is not None:
+        mean_map, rms_map = (m.squeeze() for m in mean_rms_maps)
+
     # Add small amount of noise, otherwise sigma-clipping algorithm called
     # within bdsf.process_image (functions.bstat) might not converge
-    z = np.random.normal(0, scale=min(img.max(), 1) * 1e-2, size=img.shape)
-    img += z
-
-    # Set up the header, which contains information required for bdsf
-    beam_size = 0.001667  # 6 arcsec
-
-    # Pixel size in deg:
-    px_size_deg = ang_size / 3600 / px_size
-
-    header_dict = {
-        "CDELT1": -px_size_deg,  # Pixel size in deg (1,5 arcsec)
-        "CUNIT1": "deg",
-        "CTYPE1": "RA---SIN",
-        "CDELT2": px_size_deg,
-        "CUNIT2": "deg",
-        "CTYPE2": "DEC--SIN",
-        "CRVAL4": 143650000.0,  # Frequency in Hz
-        "CUNIT4": "HZ",
-        "CTYPE4": "FREQ",
-    }
-
-    # Set up hdu with header and image data for temporary fits file,
-    # because bdsf only accepts fits files
-    hdu = fits.PrimaryHDU(data=img, header=fits.Header(header_dict))
+    if add_noise:
+        z = np.random.normal(0, scale=min(img.max(), 1) * 1e-2, size=img.shape)
+        img += z
 
     # Create a temporary file
-    with tempfile.NamedTemporaryFile(prefix=id, suffix=".fits", dir=tmpdir) as f:
+    with (
+        tempfile.NamedTemporaryFile(prefix=id, suffix=".fits", dir=tmpdir) as f,
+        tempfile.NamedTemporaryFile(
+            prefix=id, suffix=".mean.fits", dir=tmpdir
+        ) as f_mean,
+        tempfile.NamedTemporaryFile(prefix=id, suffix=".rms.fits", dir=tmpdir) as f_rms,
+    ):
 
         # Write the hdu to tmp fits file
-        fits.HDUList([hdu]).writeto(f.name, overwrite=True)
+        write_to_fits(img, f.name, wcs=wcs, px_size_arcsec=px_size_arcsec)
 
+        beam_size = beam_size_arcsec / 3600
         kwargs = {
+            "beam": (beam_size, beam_size, 0),
             "thresh_isl": 5,
             "thresh_pix": 0.5,
             "mean_map": "const",
@@ -116,12 +502,22 @@ def bdsf_on_image(
             "thresh": "hard",
             "quiet": True,
             "debug": True,
+            "frequency": 144e6,  # Default frequency in Hz
         }
+
+        if mean_rms_maps is not None:
+            # Write mean and rms maps to temporary files
+            write_to_fits(mean_map, f_mean.name, wcs=wcs, px_size_arcsec=px_size_arcsec)
+            write_to_fits(rms_map, f_rms.name, wcs=wcs, px_size_arcsec=px_size_arcsec)
+            kwargs["rmsmean_map_filename"] = [
+                os.path.basename(f_mean.name),
+                os.path.basename(f_rms.name),
+            ]
         kwargs.update(bdsf_kwargs)
 
+        beam_size = beam_size_arcsec / 3600
         img = bdsf.process_image(
             f.name,
-            beam=(beam_size, beam_size, 0),
             **kwargs,
         )
 
@@ -135,35 +531,83 @@ def bdsf_on_image(
     return img
 
 
-@redirect_printing
-def catalogs_from_bdsf(img: bdsf.image.Image):
-    cat_list = []
+def write_to_fits(img, fpath, wcs=None, **header_kw):
+    hdu = fits.PrimaryHDU(
+        data=img,
+        header=(
+            wcs.to_header()
+            if wcs is not None
+            else fits.Header(make_header_dict(**header_kw))
+        ),
+    )
+    fits.HDUList([hdu]).writeto(fpath, overwrite=True)
+
+
+def make_header_dict(
+    px_size_arcsec=1.5, freq_hz=144e6, wcs=None, beam_size_arcsec=6, **header_kw
+):
+    """
+    Create a header dictionary for bdsf.
+    """
+    d = {
+        "CDELT1": -px_size_arcsec / 3600,  # Pixel size in deg (1.5 arcsec)
+        "CUNIT1": "deg",
+        "CTYPE1": "RA---SIN",
+        "CDELT2": px_size_arcsec / 3600,
+        "CUNIT2": "deg",
+        "CTYPE2": "DEC--SIN",
+        "CRVAL4": freq_hz,  # Frequency in Hz
+        "CUNIT4": "HZ",
+        "CTYPE4": "FREQ",
+        "HISTORY": "Created manually by utils.analysis.bdsf_analysis.make_header_dict",
+        "BMAJ": beam_size_arcsec / 3600,
+        "BMIN": beam_size_arcsec / 3600,
+        "BPA": 90,
+    }
+    if wcs is not None:
+        d.update(wcs.to_header())
+    d.update(header_kw)
+    return d
+
+
+def catalogs_from_bdsf(
+    img: bdsf.image.Image,
+    tmpdir=paths.ANALYSIS_PARENT / "tmp",
+):
+    cat_dict = {}
 
     # Loop through both cat types
     for cat_type in ["gaul", "srl"]:
 
         # Create a temporary csv file
-        with tempfile.NamedTemporaryFile(suffix=".csv") as f:
+        with tempfile.NamedTemporaryFile(suffix=".csv", dir=tmpdir) as f:
 
             # Write the catalog to the csv file
-            img.write_catalog(
-                outfile=f.name,
-                clobber=True,
-                catalog_type=cat_type,
-                format="csv",
-            )
+            with open(os.devnull, "w") as devnull:
+                # Supress all output from this process.
+                old_stdout = sys.stdout
+                sys.stdout = devnull
+                try:
+                    img.write_catalog(
+                        outfile=f.name,
+                        clobber=True,
+                        catalog_type=cat_type,
+                        format="csv",
+                    )
+                finally:
+                    sys.stdout = old_stdout
 
             # Read the csv file
             try:
                 catalog = pd.read_csv(f.name, skiprows=5, skipinitialspace=True)
 
             except pd.errors.EmptyDataError:
-                catalog = None
+                catalog = pd.DataFrame({})
 
             # Append to list
-            cat_list.append(catalog)
+            cat_dict[cat_type] = catalog
 
-    return cat_list
+    return cat_dict
 
 
 def dict_from_bdsf(img: bdsf.image.Image):
@@ -281,7 +725,7 @@ def bdsf_worker_func(img, image_id, q, bdsf_kwargs):
     # Retrieve the catalogs of the bdsf image object
     cats = catalogs_from_bdsf(bdsf_img)  # cat_g, cat_s
     for cat in cats:
-        if cat is not None:
+        if not cat.empty:
             cat["Image_id"] = image_id
 
     # Append to writer queue
@@ -496,6 +940,7 @@ def bdsf_plot(img, keys=["ch0_arr", "resid_gaus_arr", "model_gaus_arr"]):
         ax.set_axis_off()
     fig.show()
 
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -513,17 +958,18 @@ if __name__ == "__main__":
     out_folder.mkdir(exist_ok=True)
 
     # Load the dataset
-    dataset = EvaluationDataset(data_path, img_size=200)
+    # TODO: Update the dataset to use the new EvaluationDataset class
+    # dataset = EvaluationDataset(data_path, img_size=200)
 
     # For testing: deterministic subset (use None for all images)
     n = None
 
     bdsf_kwargs = {
-    'thresh_isl': 3.5,
-    'thresh_pix': 1,
-    # 'shapelet_do': True,
-    # 'atrous_do': True,
-}
+        "thresh_isl": 3.5,
+        "thresh_pix": 1,
+        # 'shapelet_do': True,
+        # 'atrous_do': True,
+    }
 
     # Run bdsf on the images
     bdsf_out = bdsf_run(

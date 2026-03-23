@@ -1,0 +1,52 @@
+{
+    "model_name": "LDM-Denoiser-Debug",
+    "model_class": "Denoiser",
+    "backbone": "Unet",
+    "dataset": "micromap-encodings-DR3-512",
+    "override_files": true,
+    "pickup": false,
+    "checkpoint": "last",
+    "tune_lr": false,
+    "overfit_batch": false,
+    "img_context": null,
+    "ctxt_transform": {},
+    "model_config" : {
+        "image_channels": 3,
+        "out_channels": 3,
+        "init_channels": 128,
+        "channel_mults": [
+            1,
+            2,
+            2
+        ],
+        "norm_groups": 32,
+        "attention_levels": 2,
+        "attention_heads": 4,
+        "attention_head_channels": 32,
+        "sigma_data": 0.5,
+        "dropout": 0.1,
+        "context_dropout": 0
+    },
+    "train_config": {
+        "batch_size": 32,
+        "iterations": 150000,
+        "learning_rate": 5e-4,
+        "scheduler": null,
+        "scheduler_kwargs": {},
+        "scheduler_settings": {},
+        "ema_rate": 0.9999,
+        "ema_warmup_steps": 5000,
+        "P_mean": -1.2,
+        "P_std": 1.2,
+        "snapshot_interval": 1000,
+        "log_interval": 1,
+        "val_every": 500,
+        "val_batches": 64,
+        "validate_ema": true,
+        "devices": [
+            0
+        ],
+        "random_crop": null,
+        "use_mask": false
+    }
+}

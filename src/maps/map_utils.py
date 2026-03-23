@@ -8,9 +8,10 @@ from scipy.stats import multivariate_normal
 from scipy.ndimage import gaussian_filter, rotate
 
 import utils.paths as paths
+from data.utils import load_fits_image
 
 
-def get_image(
+def get_map_image(
     in_map,
     get_wcs=True,
 ):
@@ -39,12 +40,7 @@ def get_image(
     elif not (file.is_file() and file.suffix == ".fits"):
         raise ValueError(f"Invalid file: {file}")
 
-    # Load data
-    with fits.open(file) as hdul:
-        image = hdul[0].data
-        wcs = WCS(hdul[0].header, naxis=2) if get_wcs else None
-
-    return image, wcs
+    return load_fits_image(file, get_wcs=get_wcs)
 
 
 def run_command_with_logging(logger, cmd, log_file, **kwargs):
@@ -139,14 +135,14 @@ def beam_solid_angle(beam_size):
     return np.pi / (4 * np.log(2)) * bb
 
 
-def get_image(file, get_wcs=True):
-    with fits.open(file) as hdul:
+def get_map_image(file, get_wcs=True):
+    with fits.open(file, memmap=True) as hdul:
         image = hdul[0].data
         if get_wcs:
             wcs = WCS(hdul[0].header, naxis=2)
-            return image, wcs
+            return image.copy(), wcs.copy()
         else:
-            return image
+            return image.copy()
 
 
 def scale_to_flux(img, flux):

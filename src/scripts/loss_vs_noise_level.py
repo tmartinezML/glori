@@ -8,10 +8,10 @@ from matplotlib import colormaps
 from numpy.lib.npyio import NpzFile
 from torch.utils.data import DataLoader
 
-from data.datasets import TrainDataset
-from model.model_utils import load_model
-from training.train_utils import edm_loss
-from utils.device_utils import distribute_model, set_visible_devices
+from data.sets.datasets import TrainDataset
+from models.utils import load_model
+from train.utils import edm_loss
+from utils.devices import distribute_model, set_visible_devices
 from utils.paths import MODEL_PARENT, ANALYSIS_PARENT, LOFAR_SUBSETS
 
 # Limit GPUs to 1

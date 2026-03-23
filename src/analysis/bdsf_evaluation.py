@@ -7,8 +7,8 @@ from tqdm import tqdm
 from scipy.optimize import fminbound
 
 import utils.paths as paths
-from plotting.plot_utils import plot_collection
-from plotting.metric_plots import bdsf_metrics_plot
+from plotting.utils import plot_collection
+from plotting.metrics import bdsf_metrics_plot
 
 
 def get_bdsf_metrics_plots(

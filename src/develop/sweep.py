@@ -5,11 +5,11 @@ import wandb
 from torch.cuda.amp import GradScaler
 
 import utils.paths as paths
-from data.datasets import TrainDataset
-from model.configs import EDM_small_config
-from training.trainer import DiffusionTrainer
-from model.model_utils import load_parameters
-from utils.device_utils import visible_gpus_by_space, set_visible_devices
+from data.sets.datasets import TrainDataset
+from models.configs import EDM_small_config
+from deprecated.trainer import DiffusionTrainer
+from models.utils import load_parameters
+from utils.devices import visible_gpus_by_space, set_visible_devices
 
 
 def train_wrapper(sweep_config=None, pretrained=None, dev_ids=None):

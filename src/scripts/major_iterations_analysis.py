@@ -4,13 +4,13 @@ from tqdm import tqdm
 from astropy.io import fits
 from scipy.ndimage import gaussian_filter
 
-import utils.logging
+import utils.my_logging
 import utils.paths as paths
 import maps.map_utils as mputil
 from analysis.bdsf_on_map import bdsf_on_array
 
 # Get logger
-logger = utils.logging.get_logger("MajItAnalysis")
+logger = utils.my_logging.get_logger("MajItAnalysis")
 
 
 def process_iteration(
@@ -26,7 +26,7 @@ def process_iteration(
     logger.info(f"Processing iteration {i+1}...")
 
     # Get model data
-    model_arr = mputil.get_image(model_file, get_wcs=False)
+    model_arr = mputil.get_map_image(model_file, get_wcs=False)
 
     # Get residual data
     with fits.open(resid_file) as hdul:
@@ -82,8 +82,8 @@ def run(map_name, ddf_parent_name="ddf"):
     beam_file = ddf_dir / f"{map_name}.Norm.fits"
     smooth_beam_file = ddf_dir / f"{map_name}.SmoothNorm.fits"
     logger.info(f"Loading beam model...")
-    beam_model = mputil.get_image(beam_file, get_wcs=False)
-    smooth_beam_model = mputil.get_image(smooth_beam_file, get_wcs=False)
+    beam_model = mputil.get_map_image(beam_file, get_wcs=False)
+    smooth_beam_model = mputil.get_map_image(smooth_beam_file, get_wcs=False)
 
     # Get resroring beam sigma
     beam_FWHM = 4  # 6 arcec = 4 pixels

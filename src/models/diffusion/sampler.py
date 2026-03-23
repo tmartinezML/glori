@@ -1,0 +1,792 @@
+import inspect
+import datetime
+
+import h5py
+import torch
+import numpy as np
+from scipy.stats import rv_histogram
+from sklearn.preprocessing import PowerTransformer
+import utils.paths as paths
+import utils.devices as devices
+import models.diffusion.diffusion as diffusion
+import models.utils as mutil
+import utils.my_logging as my_logging
+
+
+class DMSampler:
+    """
+    Class for sampling images from a model.
+
+    Attributes
+    ----------
+    logger : logging.Logger
+        Logger for the class
+    out_root : Path
+        Parent folder for saving images
+    settings : dict
+        Settings for the sampler
+    settings_not_save : list
+        Settings that should not be saved to the output file
+
+    Methods
+    -------
+    sample(model_name, model=None, context=None, context_fn=None, labels=None, latents=None, distribute_model=True, device_ids=None, file_name=None, model_kwargs={}, **settings_kwargs)
+        Sample images from a model and save them to an h5 file.
+    quick_sample(model_name, model=None, context=None, context_fn=None, labels=None, latents=None, distribute_model=True, device_ids=None, model_kwargs={}, **settings_kwargs)
+        Sample images from a model and return them as a numpy array.
+    get_fpeak_model_dist(train_set_path)
+        Get a function that samples from a distribution of maximum pixel values in training data.
+    get_labels(n_labels=4, samples_per_label=None)
+        Get labels for class-conditioned sampling of images.
+    """
+
+    def __init__(self, out_root=paths.ANALYSIS_PARENT, **settings) -> None:
+        """
+        Initialize the Sampler class.
+
+        Parameters
+        ----------
+        out_root : Path, optional
+            Parent folder for saving images, by default paths.ANALYSIS_PARENT
+        **settings : dict, optional
+            Settings for the sampler, by default
+        """
+
+        # Logger
+        self.logger = my_logging.get_logger(self.__class__.__name__)
+
+        # Root for output
+        self.out_root = out_root
+
+        # Standard settings
+        self.settings = {
+            # Sampling setup
+            "n_samples": 1000,
+            "n_devices": 1,
+            "samples_per_device": 1000,  # Depending on model size
+            "image_size": 80,
+            "image_channels": None,
+            # Output setup
+            "comment": "",
+            "return_steps": True,
+            # Solver setup
+            "timesteps": 25,
+            "guidance_strength": 0.1,
+            "sigma_min": 2e-3,
+            "sigma_max": 80,
+            "rho": 7,
+            "S_churn": 0,
+            "S_min": 0,
+            "S_max": torch.inf,
+            "S_noise": 1,
+            "drop_inpainting_ctxt_at": -1,
+            "use_inpainting_replacement": True,
+        }
+        self.settings_not_save = ["n_samples", "n_devices", "samples_per_device"]
+
+        # Update settings with user input
+        self.settings.update(settings)
+
+    def sample(
+        self,
+        model_name,
+        model=None,
+        img_context=None,
+        context=None,
+        context_fn=None,
+        labels=None,
+        latents=None,
+        distribute_model=True,
+        device_ids=None,
+        file_name=None,
+        model_kwargs={},
+        **settings_kwargs,
+    ):
+        """
+        Sample images from a model and save them to an h5 file.
+
+        Parameters
+        ----------
+        model_name : nn.Module
+            The name of the model to sample from
+        model : nn.Module, optional
+            The pre-trained model to use for sampling. If not provided, the model will be loaded using `model_utils.load_model`.
+        context : array_like, optional
+            The context tensor for conditioning the sampling. If provided, it should have shape (n_samples, context_dim).
+        context_fn : callable, optional
+            A function that generates the context tensor. If provided, it should take the number of samples as input and return a tensor of shape (n_samples, context_dim).
+        labels : array_like, optional
+            The labels tensor for class-conditioned sampling. If provided, it should have shape (n_samples, label_dim).
+        latents : array_like, optional
+            The latents tensor for random sampling. If provided, it should have shape (n_samples, latent_dim).
+        distribute_model : bool, optional
+            Whether to distribute the model to gpu using `device_utils.distribute_model`. Default is True.
+        device_ids : list, optional
+            The list of device IDs to use for model distribution. If not provided, the available devices will be used.
+        file_name : str, optional
+            The name of the output h5 file. If not provided, name is constructed from model name.
+        model_kwargs : dict, optional
+            Additional keyword arguments to pass to `model_utils.load_model`. Default is an empty dictionary.
+        **settings_kwargs : dict, optional
+            Additional keyword arguments to update the sampler settings.
+
+        Returns
+        -------
+        np.ndarray
+            The sampled images as a numpy array.
+
+        Raises
+        ------
+        ValueError
+            If a setting in the kwargs is not recognized.
+
+        Notes
+        -----
+            Refer to `quick_sample` for more details on the sampling process.
+        """
+        # Update settings with user input
+        for key, val in settings_kwargs.items():
+            if key in self.settings:
+                self.settings[key] = val
+            else:
+                raise ValueError(f"Setting <{key}> not recognized.")
+
+        # Set paths for output
+        out_folder = self.out_root / model_name
+        out_folder.mkdir(exist_ok=True)
+        out_file = out_folder / (file_name or f"{model_name}_samples.h5")
+
+        # Set name for dataset in h5 file
+        dset_name = "samples"
+        dset_name += "_" * bool(self.settings["comment"]) + self.settings["comment"]
+
+        # Get images
+        imgs, denoiser_outputs = self.quick_sample(
+            model_name,
+            model=model,
+            img_context=img_context,
+            context=context,
+            context_fn=context_fn,
+            labels=labels,
+            seed_noise=latents,
+            distribute_model=distribute_model,
+            device_ids=device_ids,
+            model_kwargs=model_kwargs,
+            return_denoiser_outputs=True,
+            # Settings already updated, no need to pass them again
+        )
+
+        self.logger.info(f"Saving samples as '{dset_name}' to {out_file}...")
+        # Save samples
+        self._save_batch_h5(
+            out_file,
+            imgs.astype(np.float32),
+            dataset_name=dset_name,
+            inputs={
+                k: v.flatten()
+                for k, v in {
+                    "context": context,
+                    "labels": labels,
+                    "latents": latents,
+                }.items()
+                if v is not None
+            },
+            attrs={
+                k: v
+                for k, v in self.settings.items()
+                if k not in self.settings_not_save
+            },
+        )
+
+        return imgs, denoiser_outputs
+
+    def quick_sample(
+        self,
+        model_name=None,
+        model=None,
+        uncond_model_name=None,
+        uncond_model=None,
+        inpainting_context=None,
+        img_context=None,
+        catalog_context=None,
+        context=None,
+        context_fn=None,
+        labels=None,
+        seed_noise=None,
+        distribute_model=True,
+        device_ids=None,
+        return_denoiser_outputs=False,
+        rescale_images=True,
+        quiet=False,
+        model_kwargs={},
+        **settings_kwargs,
+    ):
+        """
+        Sample images from a model and return them as a numpy array.
+
+        Parameters
+        ----------
+        model_name : str
+            The name of the model to use for sampling.
+        model : torch.nn.Module, optional
+            The model to use for sampling. If not provided, the model will be loaded using `model_utils.load_model`.
+        context : torch.Tensor, optional
+            The context tensor for conditioning the sampling. If provided, it should have shape (n_samples, context_dim).
+        context_fn : callable, optional
+            A function that generates the context tensor for conditioning the sampling. If provided, it should take the number of samples as input and return a tensor of shape (n_samples, context_dim).
+        labels : torch.Tensor, optional
+            The labels tensor for conditioning the sampling. If provided, it should have shape (n_samples, label_dim).
+        seed_noise : torch.Tensor, optional
+            The seed noise tensor for conditioning the sampling. If provided, it should have shape (n_samples, latent_dim).
+        distribute_model : bool, optional
+            Whether to distribute the model across multiple devices. Defaults to True.
+        device_ids : list of int, optional
+            The device IDs to use for distributing the model. If not provided, the available devices will be used.
+        model_kwargs : dict, optional
+            Additional keyword arguments to pass to `model_utils.load_model` when loading the model.
+        **settings_kwargs : dict
+            Additional keyword arguments to update the sampler settings.
+
+        Returns
+        -------
+        numpy.ndarray
+            The sampled images as a numpy array.
+
+        Raises
+        ------
+        ValueError
+            If a setting key is not recognized.
+
+        Notes
+        -----
+        - If both `context` and `labels` are provided, their number of samples must match.
+        - The number of samples is inferred from the input shapes if `context` or `labels` is provided.
+        - The number of batches is determined based on the sampler settings and the number of samples.
+        - The inputs (`context`, `labels`, `latents`) are reshaped to match the batch size and number of batches.
+        - The solver parameters are extracted from the settings based on the call signature of `diffusion.edm_sampling`.
+        - The model is prepared by loading it if not provided and optionally distributing it across devices.
+        - The sampling is performed in batches, and the sampled images are returned as a numpy array.
+        - The output images are scaled from the range [-1, 1] to [0, 1].
+
+        """
+        # Set logging level
+        if quiet:
+            self.logger.setLevel(30)
+
+        # Make sure any model is passed
+        assert (
+            model_name is not None or model is not None
+        ), "Model name or model must be provided."
+        # Update settings with user input
+        for key, val in settings_kwargs.items():
+            if key in self.settings:
+                self.settings[key] = val
+            else:
+                raise ValueError(f"Setting <{key}> not recognized.")
+
+        if inpainting_context is not None:
+            inpainting_mask, inpainting_img = inpainting_context
+
+        # If inputs are passed, they determine the number of samples
+        if any(
+            [
+                v is not None
+                for v in [inpainting_context, img_context, context, labels, seed_noise]
+            ]
+        ):
+
+            # Assert only one of context or context_fn is passed
+            assert not (
+                context is not None and context_fn is not None
+            ), "Choose either context or context_fn."
+
+            # Assert equal shapes if both are passed
+            if context is not None and labels is not None:
+                assert (cs := self.context.shape) == (
+                    ls := labels.shape
+                ), f"Number of samples must match! Got shapes: {cs} (context) and {ls} (labels)."
+
+            # Infer number of samples from input shapes
+            self.logger.info(
+                "Inferring number of samples from input shapes. Sampler settings will be changed."
+            )
+            self.settings["n_samples"] = (
+                img_context.shape[0]
+                if img_context is not None
+                else (
+                    context.shape[0]
+                    if context is not None
+                    else (
+                        labels.shape[0]
+                        if labels is not None
+                        else (
+                            inpainting_mask.shape[0]
+                            if inpainting_context is not None
+                            else seed_noise.shape[0]
+                        )
+                    )
+                )
+            )
+        self.logger.info(f"Sampling {self.settings['n_samples']} images in total.")
+
+        # Determine number of batches
+        do_extra_batch = False
+        batch_size = min(
+            self.settings["samples_per_device"] * self.settings["n_devices"],
+            self.settings["n_samples"],
+        )
+        n_batches = max(int(self.settings["n_samples"] / batch_size), 1)
+        self.logger.info(
+            f"Sampling {n_batches * batch_size} images in {n_batches} batches of size {batch_size}."
+        )
+
+        # Prepare extra batch if needed
+        if self.settings["n_samples"] > n_batches * batch_size:
+            do_extra_batch = True
+            extra_batch_size = self.settings["n_samples"] % batch_size
+            self.logger.info(
+                f"An additional batch of size {self.settings['n_samples'] % batch_size} will be sampled."
+            )
+            if img_context is not None:
+                img_context_extra = img_context[-extra_batch_size:]
+                img_context = img_context[:-extra_batch_size]
+
+            if catalog_context is not None:
+                catalog_context_extra = catalog_context[-extra_batch_size:]
+                catalog_context = catalog_context[:-extra_batch_size]
+
+            if labels is not None:
+                labels_extra = labels[-extra_batch_size:]
+                labels = labels[:-extra_batch_size]
+
+            if context is not None:
+                context_extra = context[-extra_batch_size:]
+                context = context[:-extra_batch_size]
+
+            if seed_noise is not None:
+                seed_noise_extra = seed_noise[-extra_batch_size:]
+                seed_noise = seed_noise[:-extra_batch_size]
+
+            if inpainting_context is not None:
+                inpainting_mask_extra = inpainting_mask[-extra_batch_size:]
+                inpainting_mask = inpainting_mask[:-extra_batch_size]
+                inpainting_img_extra = inpainting_img[-extra_batch_size:]
+                inpainting_img = inpainting_img[:-extra_batch_size]
+
+        # Bring inputs into right shape:
+        # Image context
+        if img_context is not None:
+            img_context = img_context.reshape(
+                n_batches, batch_size, *img_context.shape[1:]
+            )
+        # Catalog Context
+        if catalog_context is not None:
+            catalog_context = catalog_context.reshape(
+                n_batches, batch_size, *catalog_context.shape[1:]
+            )
+        # Labels
+        if labels is not None:
+            labels = labels.reshape(n_batches, -1)
+        # Context
+        if context is not None:
+            context = context.reshape(n_batches, batch_size, -1)
+        elif context_fn is not None:
+            context = context_fn(n_batches * batch_size).reshape(
+                n_batches, batch_size, -1
+            )
+        # Inpainting context
+        if inpainting_context is not None:
+            inpainting_mask = inpainting_mask.reshape(
+                n_batches, batch_size, *inpainting_mask.shape[1:]
+            )
+            inpainting_img = inpainting_img.reshape(
+                n_batches, batch_size, *inpainting_img.shape[1:]
+            )
+        # Seed noise
+        if seed_noise is not None:
+            seed_noise = seed_noise.reshape(
+                n_batches, batch_size, *seed_noise.shape[1:]
+            )
+
+        # Prepare extra batch if needed
+        if do_extra_batch:
+            if img_context is not None:
+                img_context_extra = img_context_extra.reshape(
+                    extra_batch_size, *img_context.shape[1:]
+                )
+            if catalog_context is not None:
+                catalog_context_extra = catalog_context_extra.reshape(
+                    extra_batch_size, *catalog_context.shape[1:]
+                )
+            if labels is not None:
+                labels_extra = labels_extra.reshape(extra_batch_size, -1)
+            if context is not None:
+                context_extra = context_extra.reshape(extra_batch_size, -1)
+            elif context_fn is not None:
+                context_extra = context_fn(extra_batch_size).reshape(
+                    extra_batch_size, -1
+                )
+            if seed_noise is not None:
+                seed_noise_extra = seed_noise_extra.reshape(-1)
+            if inpainting_context is not None:
+                inpainting_mask_extra = inpainting_mask_extra.reshape(
+                    extra_batch_size, *inpainting_mask.shape[1:]
+                )
+                inpainting_img_extra = inpainting_img_extra.reshape(
+                    extra_batch_size, *inpainting_img.shape[1:]
+                )
+
+        # Extract solver parameters from settings by matching call signature
+        solver_params = inspect.signature(diffusion.edm_sampling).parameters.keys()
+        solver_settings = {
+            key: self.settings[key] for key in solver_params if key in self.settings
+        }
+
+        # In case all context is none, we set guidance strength to -1, so only
+        # unconditioned model is used
+        if (
+            img_context is None
+            and context is None
+            and labels is None
+            and catalog_context is None
+        ):
+            self.logger.info("All context is None, setting guidance strength to -1.")
+            solver_settings["guidance_strength"] = -1
+
+        # Prepare model
+        if model is None:
+            model = mutil.load_model(model_name, **model_kwargs)
+        if distribute_model:
+            model, device_ids = devices.distribute_model(
+                model, self.settings["n_devices"], device_ids=device_ids
+            )
+        model = model.eval()
+        # Prepare unconditioned model if passed
+        if uncond_model_name is not None and uncond_model is None:
+            uncond_model = mutil.load_model(uncond_model_name, **model_kwargs)
+
+        if uncond_model is not None:
+            if distribute_model:
+                uncond_model, _ = devices.distribute_model(
+                    uncond_model,
+                    self.settings["n_devices"],
+                    device_ids=device_ids,
+                )
+            uncond_model = uncond_model.eval()
+
+        # Sampling
+        batch_list = []
+        denoiser_output_list = []
+        t0 = datetime.datetime.now()
+        dt = datetime.timedelta(seconds=0)
+        for i in range(n_batches):
+
+            # Construct the log message
+            log = f"Sampling batch {i+1}/{n_batches}"
+
+            # That's already enough for the first batch
+            if i == 0:
+                log += "..."
+            # For the next batches, we do some time logging
+            else:
+                # At this point, i is the number of processed batches
+                t_per_batch = dt / i
+                eta = t_per_batch * (n_batches - i)
+                if do_extra_batch:
+                    eta += t_per_batch * extra_batch_size / batch_size
+                log += f" -- ETA: {my_logging.format_timedelta(eta)} -- {my_logging.format_timedelta(t_per_batch)}/batch..."
+
+            # Gotta log the log
+            self.logger.info(log)
+
+            # Now let's get that yummy batch
+            batch, denoiser_outputs = diffusion.edm_sampling(
+                model,
+                uncond_model=uncond_model,
+                inpainting_context=(
+                    (inpainting_mask[i], inpainting_img[i])
+                    if inpainting_context is not None
+                    else None
+                ),
+                img_context_batch=img_context[i] if img_context is not None else None,
+                catalog_context_batch=(
+                    catalog_context[i] if catalog_context is not None else None
+                ),
+                context_batch=context[i] if context is not None else None,
+                label_batch=labels[i] if labels is not None else None,
+                seed_noise=seed_noise[i] if seed_noise is not None else None,
+                batch_size=batch_size,
+                quiet=quiet,
+                **solver_settings,
+            )
+            batch_list.append(batch if self.settings["return_steps"] else batch[-1])
+            denoiser_output_list.append(denoiser_outputs)
+
+            # Update time for time logging
+            dt = datetime.datetime.now() - t0
+
+        # If an extra batch is sampled, append it to the list
+        if do_extra_batch:
+            self.logger.info(f"Sampling additional batch of size {extra_batch_size}...")
+            batch, denoiser_outputs = diffusion.edm_sampling(
+                model,
+                uncond_model=uncond_model,
+                inpainting_context=(
+                    (inpainting_mask_extra, inpainting_img_extra)
+                    if inpainting_context is not None
+                    else None
+                ),
+                img_context_batch=(
+                    img_context_extra if img_context is not None else None
+                ),
+                catalog_context_batch=(
+                    catalog_context_extra if catalog_context is not None else None
+                ),
+                context_batch=context_extra if context is not None else None,
+                label_batch=labels_extra if labels is not None else None,
+                seed_noise=seed_noise_extra if seed_noise is not None else None,
+                batch_size=extra_batch_size,
+                **solver_settings,
+            )
+            batch_list.append(batch if self.settings["return_steps"] else batch[-1])
+            denoiser_output_list.append(denoiser_outputs)
+
+        dt = datetime.datetime.now() - t0
+        self.logger.info(f"Sampling complete in {my_logging.format_timedelta(dt)}.")
+
+        # Return model to cpu to free up gpu memory
+        if distribute_model:
+            model = devices.collect_model(model)
+            if uncond_model is not None:
+                uncond_model = devices.collect_model(uncond_model)
+
+        self.logger.info("Reshaping output array...")
+        # Output of sample_batch is list with T+1 entries of shape
+        # (bsize, 1, 80, 80).
+        # Batch_list is a list of such lists with n_batches entries,
+        # i.e. n_batches x (T+1) x (bsize, 1, 80, 80).
+        # If return_steps is True, want it as a single tensor of shape
+        # (n_batches * bsize = n_samples, T+1, 1, 80, 80).
+        if self.settings["return_steps"]:
+            imgs = (
+                torch.concat([torch.stack(b, dim=1) for b in batch_list]).cpu().numpy()
+            )
+        # If return_steps is False, we only have the final image, i.e. a list
+        # of tensors of shape (bsize, 1, 80, 80).
+        else:
+            imgs = torch.concat(batch_list).cpu().numpy()
+
+        # Scale images from [-1, 1] to [0, 1]
+        if rescale_images:
+            imgs = (imgs + 1) / 2
+
+        # Denoiser output is a list with n_batches entries,
+        # filled with lists with n_steps entries,
+        # filled with tensors of shape (bsize, 1, 80, 80).
+        # We want it as a single tensor of shape (n_batches * bsize = n_samples, n_steps, 1, 80, 80).
+        denoiser_outputs = (
+            torch.concat([torch.stack(b, dim=1) for b in denoiser_output_list])
+            .cpu()
+            .numpy()
+        )
+
+        # Release GPU memory
+        del model, batch_list
+        torch.cuda.empty_cache()
+
+        self.logger.info("Sampling complete.")
+
+        if return_denoiser_outputs:
+            return imgs, denoiser_outputs
+
+        return imgs
+
+    def get_fpeak_model_dist(self, train_set_path):
+        """
+        Generate the model distribution of peak flux values from a training set.
+
+        Parameters
+        ----------
+        train_set_path : Path or str
+            The path to the training set file.
+
+        Returns
+        -------
+        function
+            A function that takes a number of samples as input and returns
+            random samples from the model peak flux distribution.
+
+        Notes
+        -----
+        This function reads the training set file, calculates the maximum values of the images,
+        applies a power transformation using the Box-Cox method, and constructs a histogram
+        of the transformed values. The resulting histogram is used to create a random variable
+        representing the model distribution.
+
+        The returned function can be used to generate random samples from the model distribution.
+        The number of samples to generate is specified by the parameter `n`.
+
+        Example
+        -------
+        >>> sampler = Sampler()
+        >>> model_dist = sampler.get_fpeak_model_dist("train_set.h5")
+        >>> samples = model_dist(1000)
+        """
+
+        with h5py.File(train_set_path, "r") as f:
+            max_vals = np.max(f["images"][:], axis=(1, 2))
+
+        pt = PowerTransformer(method="box-cox")
+        pt.fit(max_vals.reshape(-1, 1))
+        max_values_tr = pt.transform(max_vals.reshape(-1, 1)).reshape(max_vals.shape)
+        hist_tr = np.histogram(max_values_tr, bins=100)
+        model_dist = rv_histogram(hist_tr, density=False)
+
+        return lambda n: model_dist.rvs(size=n)
+
+    def get_labels(self, n_labels=4, samples_per_label=None):
+        """
+        Get an array of labels for class-conditioned sampling.
+
+        Parameters
+        ----------
+        n_labels : int, optional
+            The number of unique labels to generate. Default is 4.
+        samples_per_label : int, optional
+            The number of samples per label. If not provided, it will be
+            calculated based on the total number of samples and the number
+            of unique labels.
+
+        Returns
+        -------
+        numpy.ndarray
+            An array of labels for the samples.
+
+        Notes
+        -----
+        The labels are generated as integers in the range [0, n_labels).
+        The output is ordered such that the first `samples_per_label` samples
+        correspond to label 0, the next `samples_per_label` samples correspond
+        to label 1, and so on.
+
+        """
+        unique_labels = list(range(n_labels))
+        samples_per_label = samples_per_label or self.settings["n_samples"] // n_labels
+        labels = np.concatenate([np.full(samples_per_label, l) for l in unique_labels])
+        return labels
+
+    def _save_batch_h5(
+        self, out_file, imgs, dataset_name="samples", inputs={}, attrs={}
+    ):
+        """
+        Save a batch of images to an HDF5 file.
+
+        Parameters
+        ----------
+        out_file : Path or str
+            The path to the output HDF5 file.
+        imgs : ndarray
+            The batch of images to be saved.
+        dataset_name : str, optional
+            The name of the dataset to store the images in the HDF5 file. Default is "samples".
+        inputs : dict, optional
+            Additional data that was used as input to the sampling and is also saved in the HDF5 file.
+            The keys represent the names of the inputs (e.g., "context", "labels", "latents"),
+            and the values represent the corresponding data arrays. Default is an empty dictionary.
+        attrs : dict, optional
+            Additional attributes to be saved for the main dataset. The keys represent the attribute names,
+            and the values represent the corresponding attribute values.
+
+        Notes
+        -----
+        This function saves the images to an HDF5 file with the specified dataset name.
+        If additional inputs are provided, they are saved as separate datasets in the same file,
+        attributed to the image dataset by the input name (e.g., "samples_context", "samples_labels").
+        """
+        # Open file
+        with h5py.File(out_file, "a") as f:
+
+            # Save images
+            self._h5_dataset_save(f, dataset_name, imgs, attrs=attrs)
+
+            # If inputs exist (labels, context, latents), add them to dataset
+            for key, val in inputs.items():
+                self._h5_dataset_save(f, f"{dataset_name}_{key}", val)
+
+    def _h5_dataset_save(self, f, dataset_name, data, attrs={}):
+        """
+        Save data to an HDF5 dataset.
+
+        Parameters
+        ----------
+        f : h5py.File
+            The HDF5 file object.
+        dataset_name : str
+            The name of the dataset to save.
+        data : array-like
+            The data to be saved.
+        attrs : dict, optional
+            Additional attributes to be stored with the dataset, by default {}.
+
+        Notes
+        -----
+        This function appends data to an existing dataset or creates a new dataset
+        in the HDF5 file with the specified name. If the dataset already exists and
+        the attributes are the same, the data is appended to the existing dataset.
+
+        """
+
+        # If dataset already exists, append if attributes are the same,
+        # else rename and proceed to create new dataset
+        if dataset_name in f:
+            dset = f[dataset_name]
+
+            # Compare current settings to dataset attributes:
+            dset_attrs = dict(dset.attrs)
+            attrs_different = not all(
+                (k in self.settings_not_save)
+                or (k in dset_attrs and dset_attrs[k] == v)
+                for k, v in attrs.items()
+            )
+
+            # If settings are different, rename dataset
+            if attrs_different:
+                i = 1
+                while f"{dataset_name}_{i}" in f:
+                    i += 1
+                self.logger.info(
+                    f"Dataset '{dataset_name}' already exists with different "
+                    f"attributes. Renaming to '{dataset_name}_{i}'."
+                )
+                dataset_name = f"{dataset_name}_{i}"
+
+            # If settings are same, append data and return
+            else:
+                self._h5_dataset_append(dset, data)
+                dset.attrs.update(attrs)
+                return
+
+        # If dataset does not exist, create it
+        dset = f.create_dataset(
+            dataset_name,
+            data=data,
+            chunks=True,
+            maxshape=((None, *data.shape[1:]) if hasattr(data, "shape") else (None,)),
+        )
+        dset.attrs.update(attrs)
+
+    def _h5_dataset_append(self, dset, data):
+        """
+        Append data to an HDF5 dataset.
+
+        This method appends the given data to the specified HDF5 dataset.
+
+        Parameters
+        ----------
+        dset : h5py.Dataset
+            The HDF5 dataset to append the data to.
+        data : numpy.ndarray
+            The data to be appended to the dataset.
+        """
+        dset.resize(dset.shape[0] + data.shape[0], axis=0)
+        dset[-data.shape[0] :] = data

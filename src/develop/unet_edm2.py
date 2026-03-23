@@ -1,5 +1,5 @@
 """
-Created following the tutorial on 
+Created following the tutorial on
 https://huggingface.co/blog/annotated-diffusion
 
 """
@@ -17,7 +17,7 @@ from torch.cuda.amp import autocast
 
 from einops import rearrange, reduce
 from einops.layers.torch import Rearrange
-from model.unet import configModuleBase
+from models.networks.modules import configModuleBase
 
 DEBUG_DIR = Path("/home/bbd0953/diffusion/results/debug")
 

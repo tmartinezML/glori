@@ -16,7 +16,7 @@ cd /hs/fs08/data/group-brueggen/tmartinez
 # For mounting: -bind /source_on_host:/destination_in_container\
 # --bind /hs/fs08/data/group-brueggen/tmartinez:/tmartinez,/hsopt/anaconda3:/hsopt/anaconda3\
 singularity exec --pid --writable-tmpfs --containall --cleanenv --no-home\
- --bind /hs/fs08/data/group-brueggen/tmartinez:/tmartinez,/hsopt/anaconda3:/hsopt/anaconda3\
+ --bind /hs/fs08/data/group-brueggen/tmartinez:/tmartinez,\
  --workdir /hs/fs08/data/group-brueggen/tmartinez\
  singularity_pills/ddf-pipeline.sif bash $1
  

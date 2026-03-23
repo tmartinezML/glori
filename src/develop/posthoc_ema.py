@@ -7,9 +7,9 @@ import wandb
 
 import utils.paths as paths
 import analysis.stats_utils as stats
-from model.model_utils import load_model
+from models.utils import load_model
 from analysis.model_evaluation import get_distributions
-from utils.device_utils import set_visible_devices, distribute_model
+from utils.devices import set_visible_devices, distribute_model
 
 
 def weight_profile(t, gamma, t_max=None):

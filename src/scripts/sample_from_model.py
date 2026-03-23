@@ -2,14 +2,14 @@ import pandas as pd
 import numpy as np
 from scipy.stats import rv_histogram
 
-from model.sampler import Sampler
-from utils.device_utils import set_visible_devices
-from model.model_utils import load_data_transforms
-import utils.logging
+from models.diffusion.sampler import DMSampler
+from utils.devices import set_visible_devices
+from models.utils import load_data_transforms
+import utils.my_logging
 import utils.paths as paths
 
 
-logger = utils.logging.get_logger(__name__)
+logger = utils.my_logging.get_logger(__name__)
 
 
 if __name__ == "__main__":
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     size_context_tr = size_transform.transform(size_context.reshape(-1, 1))
 
     # Initialize sampler
-    sampler = Sampler(n_samples=n_samples, n_devices=n_gpu)
+    sampler = DMSampler(n_samples=n_samples, n_devices=n_gpu)
 
     # Sample from model
     logger.info("Sampling with context...")

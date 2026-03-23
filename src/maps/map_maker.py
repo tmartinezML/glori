@@ -18,16 +18,16 @@ from scipy.stats import rv_histogram
 from skimage.transform import resize
 from skimage.measure import regionprops_table
 
-import utils.logging
+import utils.my_logging
 import utils.paths as paths
 import maps.map_utils as mputil
-import model.model_utils as mdutil
-import model.sampler as smplr
-from data.cutouts import save_images_h5py
-from data.datasets import parse_dset_path
+import models.utils as mdutil
+import models.diffusion.sampler as smplr
+from data.obs.cutouts import save_images_h5py
+from data.utils import parse_dset_path
 from maps.estimate_npix import EstimateNpix
 from maps.map_utils import process_compact_source
-from data.segment import get_sample_mask, circular_mask
+from data.trf.segment import get_sample_mask, circular_mask
 
 # TODO:
 # - Add type hints & docstrings
@@ -51,7 +51,7 @@ class MapMaker:
         sampler_settings={"n_devices": 2},
     ):
         # Logger
-        self.logger = utils.logging.get_logger(self.__class__.__name__)
+        self.logger = utils.my_logging.get_logger(self.__class__.__name__)
 
         # Set map name and output directory
         self.map_name = map_name
@@ -855,7 +855,7 @@ class MapMaker:
         context_tr = torch.Tensor(size_transform.transform(context))
 
         # Sample source images
-        sampler = smplr.Sampler(return_steps=False, **self.sampler_settings)
+        sampler = smplr.DMSampler(return_steps=False, **self.sampler_settings)
         samples = sampler.quick_sample(
             model_name=self.model_name,
             context=context_tr,
