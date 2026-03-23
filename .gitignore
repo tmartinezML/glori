@@ -1,23 +1,28 @@
-*.h5
-*.zip
-galaxy_data/
-jobs/
-analysis_results
-image_data
-model_results
-losito
-sky_maps
-trecs_output
-trecs
-sky_maps
-misc
-.*
-*.log
-*.out
-wandb/
-**/__pycache__/
-*.simg
-launch_singularity
-src/notebooks/media/
-src/maps/default_files/synthms/
-src/maps/default_files/synthms_old/
+# Private data, ignore all by default
+/workspace/
+/archive/
+
+# Large files
+/src/glori/maps/default_files/lotssms
+/src/glori/maps/default_files/synthms
+/src/glori/maps/default_files/synthms_old
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Common tool/test caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# VS Code (ignore all by default)
+.vscode/
+
+# PDM local interpreter pin
+.pdm-python
+
+# Setuptools build metadata
+*.egg-info/
