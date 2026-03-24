@@ -27,7 +27,7 @@ from glori.models.vae.vae import VAE
 from glori.models.vae.vqvae import VQVAE
 from glori.models.diffusion.denoiser import Denoiser
 from glori.config.model_config import modelConfig
-from glori.models.utils import parse_lightning_ckpt
+from glori.models.load import parse_lightning_ckpt
 from glori.infra.devices import visible_gpus_by_space
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 import glori.data.trf.post as post

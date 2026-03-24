@@ -21,7 +21,7 @@ from torch.utils.data import (
 import glori.settings.paths as paths
 from glori.infra.logging import get_logger
 import glori.data.trf.transforms as T
-import glori.data.utils as utils
+import glori.data.load as load
 from glori.data.trf.scalers import LOFARScaler
 
 
@@ -70,7 +70,7 @@ class MicromapDatasetHF:
         self.logger = get_logger("MMDsHF")
 
         # Assume arrow datasets are in sibling directory
-        self.path = utils.parse_dset_path(dset, lookup=dset_lookup)
+        self.path = load.parse_dset_path(dset, lookup=dset_lookup)
 
         if not self.path.exists():
             raise FileNotFoundError(

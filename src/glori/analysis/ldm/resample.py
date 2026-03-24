@@ -4,7 +4,7 @@ import inspect
 import pandas as pd
 import numpy as np
 
-from glori.data.utils import load_mosaic
+from glori.data.load import load_mosaic
 from glori.data.obs.micromaps.utils import (
     context_map_by_wcs,
     reduce_context_map,

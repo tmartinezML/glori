@@ -7,7 +7,7 @@ import numpy as np
 
 import glori.settings.paths as paths
 import glori.infra.logging as my_logging
-import glori.models.utils as mutil
+import glori.models.load as mutil
 from glori.models.vae.vqvae import VQVAE
 from glori.models.diffusion.denoiser import Denoiser
 from glori.inference.dm_sampler import DMSampler

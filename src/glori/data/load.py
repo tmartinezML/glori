@@ -1,3 +1,4 @@
+from pprint import pformat
 from pathlib import Path
 from copy import deepcopy
 from functools import cache
@@ -118,7 +119,8 @@ def parse_dset_path(dset, lookup=paths.LOFAR_SUBSETS):
                     )
                 else:
                     raise FileNotFoundError(
-                        f"File {dset} not found. Available datasets: {list(lookup.keys())}"
+                        f"File {dset} not found.\n\nAvailable datasets:\n{pformat(list(lookup.keys()))}"
+                        f"\n\nAvailable files:\n{pformat([p.name for p in parent.iterdir()])}"
                     )
 
         case _:

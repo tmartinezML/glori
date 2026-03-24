@@ -8,7 +8,7 @@ from scipy.stats import multivariate_normal
 from scipy.ndimage import gaussian_filter, rotate
 
 import glori.settings.paths as paths
-from glori.data.utils import load_fits_image
+from glori.data.load import load_fits_image
 
 
 def get_map_image(

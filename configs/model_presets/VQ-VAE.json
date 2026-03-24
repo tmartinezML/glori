@@ -41,8 +41,7 @@
         "sync_nu": 0.2,
         "replace_freq": 20,
         "cb_norm": "none",
-        "norm": "bn",
-        "distance_fn": "euclidean"
+        "norm": "bn"
     },
     "disc_loss": "hinge",
     "disc_weight": 0.1,

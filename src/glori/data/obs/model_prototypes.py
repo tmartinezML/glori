@@ -16,7 +16,7 @@ import glori.settings.paths as paths
 from glori.infra.logging import get_logger, add_file_handler
 from . import prototypes_utils as putil
 from .cutouts import cutout_from_catalog
-from glori.data.utils import load_lotss_catalog
+from glori.data.load import load_lotss_catalog
 from glori.data.trf.segment import smooth_mask
 from glori.data.trf.image_utils import apply_restoring_beam
 from glori.data.trf.functional import minmax_scale_batch

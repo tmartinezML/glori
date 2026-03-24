@@ -15,7 +15,7 @@ from einops.layers.torch import Rearrange
 from einops._torch_specific import allow_ops_in_compiled_graph
 
 from glori.config.model_config import modelConfig
-from glori.models.utils import parse_lightning_ckpt
+from glori.models.load import parse_lightning_ckpt
 from glori.models.networks.modules import (
     Any,
     modelConfig,

@@ -26,10 +26,10 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 import glori.data.obs.micromaps.arrow_functions as afc
 import glori.settings.paths as paths
 import glori.data.obs.micromaps.arrow_utils as au
-from glori.models.utils import parse_lightning_ckpt
+from glori.models.load import parse_lightning_ckpt
 from glori.data.sets.micromaps import MicromapDatasetHF
 from glori.infra.logging import get_logger, add_file_handler
-from glori.data.utils import load_lotss_catalog, parse_dset_path
+from glori.data.load import load_lotss_catalog, parse_dset_path
 from glori.data.obs.micromaps.utils import (
     get_micromaps,
     filter_catalog_by_wcs,

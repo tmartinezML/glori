@@ -21,7 +21,7 @@ import itertools
 import glori.settings.paths as paths
 import glori.infra.logging as my_logging
 from glori.config.model_config import modelConfig
-from glori.data.utils import load_fits_catalog
+from glori.data.load import load_fits_catalog
 from glori.data.trf.scalers import ContextScaler
 
 logger = my_logging.get_logger(__name__)

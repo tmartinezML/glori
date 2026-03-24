@@ -1,35 +1,24 @@
 import json
-import art
-import torch
-import numpy as np
-from skimage.transform import rescale
-import contextlib
-import concurrent.futures
 from datetime import datetime
 from functools import partial
 
+import art
+import torch
 import randomname
-import analysis.ldm.bdsf
-from plotting.images import plot_image_grid
-import utils.paths as paths
-from data.trf.functional import catalog_context_pos_rescale, zero_center
-from data.utils import load_mosaic, load_fits_catalog, load_lotss_catalog
-from utils.my_logging import get_logger, add_file_handler
+import numpy as np
 
-import analysis.ldm.io as ldmio
-import analysis.ldm.bdsf as ldmbdsf
-from analysis.bdsf_analysis import *
-from models.utils import parse_lightning_ckpt
+import glori.settings.paths as paths
+import glori.data.trf.post as post
+import glori.data.trf.transforms as T
+import glori.analysis.ldm.io as ldmio
+import glori.analysis.ldm.bdsf as ldmbdsf
+from glori.analysis.bdsf_analysis import *
+from glori.plotting.images import plot_image_grid
+from glori.infra.logging import get_logger, add_file_handler
+from glori.data.trf.functional import zero_center
+from glori.data.sets.micromaps import MicromapDatasetHF
+from glori.models.load import parse_lightning_ckpt
 from glori.inference.ldm_sampler import LDMSampler
-from glori.inference.swiit_sampler import SWIITSampler
-from data.obs.micromaps.utils import (
-    context_map_by_wcs,
-    get_model_image,
-    reduce_context_map,
-)
-import data.trf.transforms as T
-import data.trf.post as post
-from data.sets.datasets import MicromapDatasetHF
 
 # Read first argument --debug for debug mode
 debug_mode = len(sys.argv) > 1 and sys.argv[1] == "--debug"
@@ -48,12 +37,12 @@ print(art.text2art("LDM Resample", font="cybermedium"))
 logger.divider()
 
 # Model settings
-denoiser = "LDM-Denoiser-WnetCC-v4.1"
-denoiser_ckpt = "best"
-uncond_denoiser = "LDM-Denoiser-Uncond-128"
+denoiser = "LDM-Denoiser-WnetCC-v5"
+denoiser_ckpt = "last-best"
+uncond_denoiser = None
 uncond_denoiser_ckpt = "best-last-10"
-vae = "VQ-VAE-256"
-sampling_type = "LDM"  # "LDM or "ICM"
+vae = "VQ-VAE-256-DR3opt-FT"
+sampling_type = "LDM"  # "LDM or "SWIIT"
 
 # Sampling settings
 latent_size = 128
@@ -66,13 +55,14 @@ catalog_mode = "combined"  # options: "combined", "separate"
 device = "cuda:1"
 
 # Settings for the sampled images
-n_images = 256
+n_images = 512
 batch_size = 16
 assert (
     n_images % batch_size == 0
 ), f"n_images must be divisible by batch_size, got {n_images} and {batch_size}"
 n_iter = n_images // batch_size
-dataset = "micromap-encodings-DR3-opt-1024"
+dataset = "micromap-encodings-DR3-opt-1024px-spacing=1"
+dataset_lookup = paths.MICROMAP_SUBSETS_ARROW_HOPPER
 weights_file = None
 max_beam_arcsec = 6
 seed = 42
@@ -158,6 +148,7 @@ if catalog_mode == "separate":
 # Load encodings, needed for the catalog context.
 dset = MicromapDatasetHF(
     dset=dataset,
+    dset_lookup=dataset_lookup,
     split="test",
     output_tuple=output_tuple,
     weights_file=weights_file,
@@ -168,7 +159,8 @@ dset = MicromapDatasetHF(
 # Load maps, needed for visual comparison
 logger.info("Loading maps dataset...")
 maps_dset = MicromapDatasetHF(
-    dataset.replace("micromap-encodings", "micromaps"),
+    dset=dataset.replace("micromap-encodings", "micromaps"),
+    dset_lookup=dataset_lookup,
     split="test",
     output_tuple=("npy",),
     weights_file=weights_file,

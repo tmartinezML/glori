@@ -31,7 +31,7 @@ from astropy import units as u
 from glori.infra.devices import is_jupyter
 import glori.settings.paths as paths
 from glori.analysis.sourcefind import run_tiered_bdsf, flatten
-from glori.data.utils import (
+from glori.data.load import (
     load_fits_image,
     load_fits_catalog,
 )

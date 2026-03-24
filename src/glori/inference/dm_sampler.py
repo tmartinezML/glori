@@ -9,7 +9,7 @@ from sklearn.preprocessing import PowerTransformer
 import glori.settings.paths as paths
 import glori.infra.devices as devices
 import glori.models.diffusion.diffusion as diffusion
-import glori.models.utils as mutil
+import glori.models.load as mutil
 import glori.infra.logging as my_logging
 
 

@@ -10,7 +10,7 @@ from astropy.wcs import WCS
 from bdsf.functions import gaussian_fcn
 
 import glori.settings.paths as paths
-import glori.data.utils as dutil
+import glori.data.load as dutil
 from glori.data.obs.prototypes_utils import make_wcs
 
 

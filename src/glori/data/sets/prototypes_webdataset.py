@@ -18,7 +18,7 @@ import glori.data.trf.functional
 import glori.infra.logging
 import glori.settings.paths as paths
 import glori.data.trf.transforms as T
-import glori.data.utils as utils
+import glori.data.load as load
 from glori.data.trf.scalers import LOFARScaler
 from glori.plotting.images import plot_image_grid
 
@@ -52,7 +52,7 @@ class PrototypesDataset(wds.WebDataset):
         self.logger = glori.infra.logging.get_logger(self.__class__.__name__)
         # Set the path for the dataset
         self.path = (
-            utils.parse_dset_path(dset, lookup=paths.LOFAR_SUBSETS) / "images.tar"
+            load.parse_dset_path(dset, lookup=paths.LOFAR_SUBSETS) / "images.tar"
         )
         self.urls = [str(self.path)]
         if not self.path.exists():

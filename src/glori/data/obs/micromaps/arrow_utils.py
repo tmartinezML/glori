@@ -13,7 +13,7 @@ from tqdm import tqdm
 import numpy as np
 
 import glori.settings.paths as paths
-from glori.data.utils import parse_dset_path
+from glori.data.load import parse_dset_path
 
 import sys, io, traceback
 

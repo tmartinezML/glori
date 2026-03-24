@@ -16,7 +16,7 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.tuner import Tuner
 from lightning.pytorch.profilers import SimpleProfiler, AdvancedProfiler
 
-from glori.models.utils import parse_lightning_ckpt
+from glori.models.load import parse_lightning_ckpt
 import glori.settings.paths as paths
 import glori.data.sets.micromaps as micromaps
 import glori.data.trf.transforms as T

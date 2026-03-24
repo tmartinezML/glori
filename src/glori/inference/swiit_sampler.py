@@ -8,7 +8,7 @@ import torch
 
 import glori.infra.logging as my_logging
 from glori.infra.devices import is_jupyter
-from glori.models.utils import parse_lightning_ckpt
+from glori.models.load import parse_lightning_ckpt
 from glori.models.vae.vqvae import VQVAE
 from glori.models.diffusion.denoiser import Denoiser
 from glori.inference.dm_sampler import DMSampler

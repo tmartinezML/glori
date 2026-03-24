@@ -262,27 +262,6 @@ def load_parameters(
     return model
 
 
-def isModel(model: nn.Module, modelClass: type) -> bool:
-    """
-    Check whether a model is an instance of a given class.
-
-    Parameters
-    ----------
-    model : nn.Module
-        The model to check.
-    modelClass : type
-        The class to check against.
-
-    Returns
-    -------
-    bool
-        True if model is an instance of modelClass, False otherwise.
-    """
-    if isinstance(model, nn.DataParallel):
-        return isinstance(model.module, modelClass)
-    return isinstance(model, modelClass)
-
-
 def load_data_transforms(source: str | Path):
     """
     Load data transforms from a file.

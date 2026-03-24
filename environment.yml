@@ -7,6 +7,7 @@ dependencies:
   - colorlog==6.10.1
   - datasets==4.2.0
   - einops==0.8.1
+  - hdf5==1.14.2
   - h5py==3.9.0
   - inputimeout==1.0.4
   - lightning==2.5.1
@@ -33,9 +34,13 @@ dependencies:
   - pip:
       - art==6.5
       - bdsf==1.13.0.post2
+      - cupy-cuda12x==13.4.1
       - indexed==1.3.0
+      - nvidia-ml-py3==7.352.0
+      - setuptools==81.0.0
       - torch==2.2.1
       - torchvision==0.17.1
+      - "vqtorch @ git+https://github.com/minyoungg/vqtorch.git@02e60a19bd742c17b0bf3e1925f23796d54cbeac"
       - wandb==0.16.4
       - wget==3.2
       - wids==0.1.11

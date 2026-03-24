@@ -21,10 +21,10 @@ from skimage.measure import regionprops_table
 import glori.infra.logging as my_logging
 import glori.settings.paths as paths
 import glori.maps.map_utils as mputil
-import glori.models.utils as mdutil
+import glori.models.load as mdutil
 import glori.inference.dm_sampler as smplr
 from glori.data.obs.cutouts import save_images_h5py
-from glori.data.utils import parse_dset_path
+from glori.data.load import parse_dset_path
 from glori.maps.estimate_npix import EstimateNpix
 from glori.maps.map_utils import process_compact_source
 from glori.data.trf.segment import get_sample_mask, circular_mask

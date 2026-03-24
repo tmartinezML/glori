@@ -8,16 +8,16 @@ import concurrent.futures
 from datetime import datetime
 
 import randomname
-from plotting.images import plot_image_grid
-import utils.paths as paths
-from data.trf.functional import catalog_context_pos_rescale
-from data.utils import load_mosaic, load_fits_catalog, load_lotss_catalog
-from utils.my_logging import get_logger
+from glori.plotting.images import plot_image_grid
+import glori.settings.paths as paths
+from glori.data.trf.functional import catalog_context_pos_rescale
+from glori.data.load import load_mosaic, load_fits_catalog, load_lotss_catalog
+from glori.infra.logging import get_logger
 
-from analysis.bdsf_analysis import *
-from models.utils import parse_lightning_ckpt
+from glori.analysis.bdsf_analysis import *
+from glori.models.load import parse_lightning_ckpt
 from glori.inference.swiit_sampler import SWIITSampler
-from data.obs.micromaps.utils import (
+from glori.data.obs.micromaps.utils import (
     context_map_by_wcs,
     get_model_image,
     reduce_context_map,
