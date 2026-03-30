@@ -20,13 +20,14 @@ from lightning.pytorch.tuner import Tuner
 from lightning.pytorch.profilers import SimpleProfiler, AdvancedProfiler
 
 import glori.settings.paths as paths
-import glori.data.sets.micromaps as micromaps
+from glori.data.sets.micromaps import MicromapDatasetHF
 import glori.data.trf.transforms as transforms
 from glori.data.trf.functional import zero_center
 from glori.models.vae.vae import VAE
 from glori.models.vae.vqvae import VQVAE
 from glori.models.diffusion.denoiser import Denoiser
 from glori.config.model_config import modelConfig
+from glori.config.micromaps_config import MicromapsConfig, resolve_micromap_kwargs
 from glori.models.load import parse_lightning_ckpt
 from glori.infra.devices import visible_gpus_by_space
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
@@ -72,18 +73,15 @@ if __name__ == "__main__":
         conf.train_config["context"].append("img_context")
     if conf.get("catalog_context") is not None:
         conf.train_config["context"].append("catalog_context")
-    if (topk := conf.get("catalog_topk")) is not None and conf.get(
-        "catalog_context"
-    ) is not None:
-        conf.model_config["catalog_context_topk"] = topk
-        conf.train_config["catalog_context_topk"] = topk
 
-    train_conf = modelConfig(**conf.train_config)
     if is_main_process:
         if Ncpu != -1:
             print(f"Limiting CPU usage to {Ncpu} CPUs.")
             torch.set_num_threads(Ncpu)
         conf.pretty_print()
+
+    train_conf = modelConfig(**conf.train_config)
+    dset_conf = MicromapsConfig(**conf.dataset_config)
 
     # Set output directory
     output_dir = paths.MODEL_PARENT / conf.model_name
@@ -181,104 +179,7 @@ if __name__ == "__main__":
         )
         callbacks.append(best_ema_checkpoint_callback)
 
-    # Prepare configuration for Datasets
-    output_tuple = ("npy",)
-    if conf.get("img_context") is not None:
-        # If the model uses image context, add it to the output tuple
-        output_tuple += (conf.img_context,)
-    if conf.get("catalog_context") is not None:
-        # If the model uses catalog context, add it to the output tuple
-        output_tuple += (conf.catalog_context,)
-
-    ctxt_transform = {}
-    if hasattr(conf, "ctxt_transform"):
-        if hasattr(conf, "ctxt_scalers"):
-            scale_fns = {
-                k: transforms.make_catalog_context_value_scale(v)
-                for k, v in conf.ctxt_scalers.items()
-            }
-        ctxt_transform = {
-            k: getattr(transforms, v)(
-                **(dict(scale_fn=scale_fns[k])) if k in scale_fns else {}
-            )
-            for k, v in conf.ctxt_transform.items()
-        }
-    post_transforms = []
-    if train_conf.get("random_crop") is not None:
-        post_transforms.append(
-            post.make_dependent_random_crop(
-                crop_size=train_conf.random_crop,
-                f=train_conf.get("crop_fctxt", 1),
-                s=train_conf.get("crop_sctxt", 1),
-                keys=("npy", *list(ctxt_transform.keys())),
-            )
-        )
-
-    if train_conf.get("blank_center") is not None:
-        post_transforms.append(
-            post.make_post(
-                {
-                    k: partial(zero_center, f_center=v)
-                    for k, v in train_conf.blank_center.items()
-                },
-            )
-        )
-
-    if train_conf.get("artifact_maker") is not None:
-        post_transforms.append(
-            post.make_post(
-                {k: post.ctxt_to_artifact for k in train_conf.artifact_maker},
-            )
-        )
-
-    if (topk := train_conf.get("catalog_context_topk")) is not None:
-        key = conf.get("catalog_context", None)
-        assert (
-            key is not None
-        ), "catalog_context_topk is set but catalog_context is not defined in the config."
-        if key in scale_fns:
-            print(
-                f"WARNING: Using scale fns for topk selection on key {key}."
-                f" Make sure topk_min_val (set to {conf.get('topk_min_val', 0)}) is in the right scale."
-            )
-        post_transforms.append(
-            post.make_ctxt_to_topk(
-                key=key,
-                k=topk,
-                min_val=conf.get("topk_min_val", 0),
-                copy=False,
-            )
-        )
-
-    # Load datasets
-    dset_kwargs = dict(
-        output_tuple=output_tuple,
-        ctxt_transform=ctxt_transform,
-        post_transform=post.compose(*post_transforms),
-        missing_is_error=train_conf.get("missing_is_error", True),
-        max_beam_arcsec=conf.get("max_beam_arcsec", None),
-    )
-    if conf.get("weights_fn") is not None:
-        dset_kwargs["weights_fn"] = eval(conf.weights_fn)
-    num_workers = train_conf.get("num_workers", num_workers)
-    dl_kwargs = dict(
-        batch_size=train_conf.batch_size,
-        num_workers=num_workers,
-        pin_memory=True,
-        prefetch_factor=8,
-        persistent_workers=True if num_workers > 0 else False,
-    )
-    # Train set
-    dset_lookup = paths.MICROMAP_SUBSETS_ARROW
-    if conf.get("dataset_lookup") is not None:
-        dset_lookup = getattr(paths, conf.dataset_lookup)
-    train_set = micromaps.MicromapDatasetHF(
-        dset=conf.dataset,
-        dset_lookup=dset_lookup,
-        split="train",
-        weights_file=conf.get("weights_file"),
-        **dset_kwargs,
-    )
+    train_set = MicromapDatasetHF.from_config(dset_conf, split="train")
     if conf.get("selection_file") is not None:
         # Expected to be a pytorch file with the indices to select
         selection_indices = torch.load(
@@ -288,15 +189,23 @@ if __name__ == "__main__":
             selection_indices.ndim == 1
         ), f"Selection indices should be a 1D array of indices, got {selection_indices.ndim}."
         train_set.select(selection_indices)
-    train_dataloader = train_set.get_dataloader(shuffle=True, **dl_kwargs)
     # Val set
-    valid_set = micromaps.MicromapDatasetHF(
-        dset=conf.dataset, split="val", dset_lookup=dset_lookup, **dset_kwargs
-    )
+    valid_set = MicromapDatasetHF.from_config(dset_conf, split="val")
     ii = torch.randint(
         0, len(valid_set), (train_conf.batch_size * train_conf.val_batches,)
     )
     valid_set.dataset.select(ii)
+
+    # Dataloaders
+    num_workers = train_conf.get("num_workers", num_workers)
+    dl_kwargs = dict(
+        batch_size=train_conf.batch_size,
+        num_workers=num_workers,
+        pin_memory=True,
+        prefetch_factor=8,
+        persistent_workers=True if num_workers > 0 else False,
+    )
+    train_dataloader = train_set.get_dataloader(shuffle=True, **dl_kwargs)
     valid_dataloader = valid_set.get_dataloader(shuffle=False, **dl_kwargs)
 
     # Parse checkpoint path

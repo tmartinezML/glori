@@ -11,6 +11,26 @@ from astropy.wcs import WCS
 import glori.settings.paths as paths
 
 
+def parse_weights_file(weights_file, parent=None):
+    match weights_file:
+        case str():
+            if "/" in weights_file:
+                weights_path = Path(weights_file)
+            elif parent is not None:
+                weights_path = parent / "metadata" / weights_file
+        case Path():
+            weights_path = weights_file
+        case _:
+            raise TypeError(
+                f"weights_file must be str or Path, got {type(weights_file)} with parent {parent}"
+            )
+
+    if not weights_path.exists():
+        raise FileNotFoundError(
+            f"Weights file not found in metadata:\n\t{weights_path}"
+        )
+
+
 def load_lotss_catalog(
     path=paths.LOTSS_DR3_CAT,
     select_cols=["RA", "DEC", "Total_flux", "Peak_flux", "Maj"],

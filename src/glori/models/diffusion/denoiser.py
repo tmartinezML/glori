@@ -13,7 +13,7 @@ from glori.models.networks.modules import configModuleBaseLightning, NaNDetected
 from glori.models.networks.unet import EDMPrecond, UnetTimeEmb
 from glori.config.model_config import modelConfig
 import glori.models.diffusion.loss
-import glori.models.diffusion.masks as tutils
+import glori.models.diffusion.context_masks as tutils
 
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
@@ -277,7 +277,7 @@ class Denoiser(configModuleBaseLightning):
                     ctxt_dict["catalog_context"].device
                 )
 
-        sigmas = tutils.sample_sigmas(
+        sigmas = glori.models.diffusion.loss.sample_sigmas(
             x, self.train_config.P_mean, self.train_config.P_std
         )
         n = torch.randn_like(x) * sigmas

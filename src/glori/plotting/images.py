@@ -1,3 +1,5 @@
+from collections.abc import Iterable
+
 import matplotlib.pyplot as plt
 from matplotlib import colormaps as cm
 import numpy as np
@@ -62,6 +64,21 @@ def plot_image_grid(
     )
     flat_axs = axs.flat if isinstance(axs, np.ndarray) else [axs]
 
+    vmax_is_iterable, vmin_is_iterable = False, False
+    if isinstance(vmin, Iterable):
+        vmin_is_iterable = True
+
+        assert len(vmin) == n_imgs, (
+            f"Length of vmin ({len(vmin)}) should match number of images "
+            f"({n_imgs})."
+        )
+    if isinstance(vmax, Iterable):
+        vmax_is_iterable = True
+        assert len(vmax) == n_imgs, (
+            f"Length of vmax ({len(vmax)}) should match number of images "
+            f"({n_imgs})."
+        )
+
     if titles is not None:
         assert len(titles) == n_imgs, (
             f"Number of titles ({len(titles)}) should match number of images "
@@ -69,7 +86,9 @@ def plot_image_grid(
         )
     for i, (ax, img) in enumerate(zip(flat_axs, imgs)):
         ax.axis("off")
-        ax.imshow(img.squeeze(), vmin=vmin, vmax=vmax, **imshow_kwargs)
+        vmin_i = vmin[i] if vmin_is_iterable else vmin
+        vmax_i = vmax[i] if vmax_is_iterable else vmax
+        ax.imshow(img.squeeze(), vmin=vmin_i, vmax=vmax_i, **imshow_kwargs)
 
         # Plot mask contours if masks are passed
         if masks is not None:

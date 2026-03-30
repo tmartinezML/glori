@@ -24,8 +24,13 @@ if not CACHE_DIR.exists():
     CACHE_DIR.mkdir()
 
 # Model configuration presets
-CONFIG_PARENT = BASE_PARENT / "configs/model_presets"
-MODEL_CONFIGS = IndexedOrderedDict({f.stem: f for f in CONFIG_PARENT.glob("*.json")})
+CONFIG_PARENT = BASE_PARENT / "configs"
+MODEL_CONFIGS = IndexedOrderedDict(
+    {f.stem: f for f in (CONFIG_PARENT / "model_presets").glob("*.json")}
+)
+DATASET_CONFIGS = IndexedOrderedDict(
+    {f.stem: f for f in (CONFIG_PARENT / "dataset_presets").glob("*.json")}
+)
 
 # Folders for different kinds of image data
 LOFAR_DATA_PARENT = IMG_DATA_PARENT / "LOFAR"

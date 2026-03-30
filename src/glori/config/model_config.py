@@ -6,6 +6,7 @@ from inspect import signature
 
 import glori.settings.paths as paths
 from glori.infra.logging import pretty_print_config
+from glori.config.load import parse_preset
 
 
 class modelConfig(object):
@@ -53,35 +54,8 @@ class modelConfig(object):
 
     @classmethod
     def from_preset(self, preset: Path | str) -> "modelConfig":
-        match preset:
-
-            # If path is a file, it is either the config file or its parent:
-            case Path():
-                # If path is a directory:
-                if preset.is_dir():
-                    config_file = preset / f"config_{preset.name}.json"
-
-                # If path is the file itself, or unexisting (will raise error later):
-                else:
-                    config_file = preset
-
-            # If path is a string, it is assumed to be a model name:
-            case str():
-                config_file = paths.MODEL_CONFIGS[preset]
-
-            # Anything else is invalid.
-            case _:
-                raise ValueError(f"Invalid model identifier: {preset}")
-
-        # Check if config file exists
-        if not config_file.exists():
-            raise FileNotFoundError(f"Config file {config_file} not found.")
-
-        # Load config file
-        with open(config_file, "r") as f:
-            config = json.load(f)
-
-        return self(**config)
+        config_file = parse_preset(preset, paths.MODEL_CONFIGS)
+        return self(**json.loads(config_file.read_text()))
 
     def save_to_json(self, filepath: Path) -> None:
         """

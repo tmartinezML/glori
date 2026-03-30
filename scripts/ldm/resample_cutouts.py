@@ -1,11 +1,13 @@
+import os
+import sys
 import json
 from datetime import datetime
-from functools import partial
 
 import art
 import torch
 import randomname
 import numpy as np
+import matplotlib.pyplot as plt
 
 import glori.settings.paths as paths
 import glori.data.trf.post as post
@@ -15,7 +17,6 @@ import glori.analysis.ldm.bdsf as ldmbdsf
 from glori.analysis.bdsf_analysis import *
 from glori.plotting.images import plot_image_grid
 from glori.infra.logging import get_logger, add_file_handler
-from glori.data.trf.functional import zero_center
 from glori.data.sets.micromaps import MicromapDatasetHF
 from glori.models.load import parse_lightning_ckpt
 from glori.inference.ldm_sampler import LDMSampler
@@ -51,7 +52,6 @@ image_size = latent_size * f_vae
 guidance_strength = 0.2
 timesteps = 25
 use_inpainting_replacement = True
-catalog_mode = "combined"  # options: "combined", "separate"
 device = "cuda:1"
 
 # Settings for the sampled images
@@ -62,7 +62,7 @@ assert (
 ), f"n_images must be divisible by batch_size, got {n_images} and {batch_size}"
 n_iter = n_images // batch_size
 dataset = "micromap-encodings-DR3-opt-1024px-spacing=1"
-dataset_lookup = paths.MICROMAP_SUBSETS_ARROW_HOPPER
+dataset_lookup = "MICROMAP_SUBSETS_ARROW_HOPPER"
 weights_file = None
 max_beam_arcsec = 6
 seed = 42
@@ -76,7 +76,7 @@ if debug_mode:
     n_images = 4
     batch_size = 2
     n_iter = n_images // batch_size
-    dataset = "micromap-encodings-DR3-opt-1024"
+    dataset = "micromap-encodings-DR3-opt-1024px-spacing=1"
     timesteps = 2
 
 # Settings for output folder
@@ -95,7 +95,7 @@ out_folder = out_parent = paths.ANALYSIS_PARENT / (
     f"-{timestamp}-{resample_name}"
 )
 if debug_mode:
-    out_folder = out_parent = paths.ANALYSIS_PARENT / "ldm/ICM-resample-debug"
+    out_folder = out_parent = paths.ANALYSIS_PARENT / "ldm/LDM-resample-debug"
 bdsf_folder, img_folder, npy_folder = ldmio.prepare_directory(
     out_folder, override=debug_mode
 )
@@ -107,66 +107,18 @@ logger.info(f"Logging to file: {log_file}")
 
 # Load datasets
 logger.info("Loading encodings dataset...")
-match catalog_mode:
-    case "combined":
-        output_tuple = (
-            "npy",
-            "context_downscaled_d=4_f=2.npy",
-        )
-        ctxt_transform = {
-            "context_downscaled_d=4_f=2.npy": T.CatalogContextTransform(scale_fn=None),
-        }
-    case "separate":
-        output_tuple = (
-            "npy",
-            "context_downscaled.npy",
-            "context_downscaled_d=4_f=2.npy",
-        )
-        ctxt_transform = {
-            "context_downscaled.npy": T.CatalogContextTransform(scale_fn=None),
-            "context_downscaled_d=4_f=2.npy": T.CatalogContextTransform(scale_fn=None),
-        }
-    case _:
-        raise ValueError(f"Invalid catalog_mode: {catalog_mode}")
-post_transforms = []
-post_transforms.append(
-    post.make_dependent_center_crop(
-        crop_size=latent_size,
-        f=[1, 2] if catalog_mode == "separate" else [2],
-        s=[1, 2] if catalog_mode == "separate" else [2],
-        keys=output_tuple,
-    )
-)
-if catalog_mode == "separate":
-    post_transforms.append(
-        post.make_post(
-            {
-                "context_downscaled_d=4_f=2.npy": partial(zero_center, f_center=2),
-            }
-        )
-    )
+
 # Load encodings, needed for the catalog context.
-dset = MicromapDatasetHF(
-    dset=dataset,
-    dset_lookup=dataset_lookup,
-    split="test",
-    output_tuple=output_tuple,
-    weights_file=weights_file,
-    ctxt_transform=ctxt_transform,
-    post_transform=post.compose(*post_transforms),
-    max_beam_arcsec=max_beam_arcsec,
+dset = MicromapDatasetHF.from_preset(
+    "LDM-Sample", dataset=dataset, dataset_lookup=dataset_lookup, split="test"
 )
 # Load maps, needed for visual comparison
 logger.info("Loading maps dataset...")
-maps_dset = MicromapDatasetHF(
-    dset=dataset.replace("micromap-encodings", "micromaps"),
-    dset_lookup=dataset_lookup,
+maps_dset = MicromapDatasetHF.from_preset(
+    "LDM-Sample-Maps",
+    dataset=dataset.replace("micromap-encodings", "micromaps"),
+    dataset_lookup=dataset_lookup,
     split="test",
-    output_tuple=("npy",),
-    weights_file=weights_file,
-    mode="maps-scaled",
-    post_transform=post.make_dependent_center_crop(crop_size=image_size, keys=("npy",)),
-    max_beam_arcsec=max_beam_arcsec,
 )
 
 # Make sub-selection
@@ -208,6 +160,14 @@ ldm_sampler = LDMSampler(
 # Prepare torch noise seed
 torch.manual_seed(noise_seed)
 
+# Prepare dummy inpainting context
+inpainting_context = (
+    torch.ones((batch_size, 1, latent_size, latent_size)),
+    torch.zeros(
+        (batch_size, ldm_sampler.settings.latent_channels, latent_size, latent_size)
+    ),
+)
+
 # Start sampling loop
 logger.info(f"Running {n_iter} iterations.")
 
@@ -220,12 +180,8 @@ for itr in range(n_iter):
 
     # Read batch
     batch = next(dl_it)
-    match catalog_mode:
-        case "combined":
-            enc, ext_ctxt = batch
-            ctxt = None
-        case "separate":
-            enc, ctxt, ext_ctxt = batch
+    print(f"Batch length: {len(batch)}")
+    enc, ext_ctxt = batch
 
     # Prepare seed noise for this batch
     batch_seed = seed + itr  # Different seed for each batch
@@ -235,8 +191,8 @@ for itr in range(n_iter):
     # Sample images with LDM sampler
     logger.info("Running LDM sampling...")
     img_out, enc_out = ldm_sampler.sample(
-        img_context=ctxt,
         catalog_context=ext_ctxt,
+        inpainting_context=inpainting_context,
         guidance_strength=guidance_strength,
         timesteps=timesteps,
         rescale=False,
@@ -256,9 +212,8 @@ for itr in range(n_iter):
     np.save(npy_folder / f"samples_unscaled_{itr + 1:04d}.npy", img_out_unsc)
     # Save center crop of extended context map.
     # This is useful for later input-output comparison.
-    if catalog_mode == "combined":
-        padw = ext_ctxt.shape[-1] // 4
-        ctxt = ext_ctxt.clone()[:, :, padw:-padw, padw:-padw]
+    padw = ext_ctxt.shape[-1] // 4
+    ctxt = ext_ctxt.clone()[:, :, padw:-padw, padw:-padw]
     np.save(npy_folder / f"context_{itr + 1:04d}.npy", ctxt.numpy())
     np.save(npy_folder / f"extended_context_{itr + 1:04d}.npy", ext_ctxt.numpy())
 
@@ -271,7 +226,7 @@ for itr in range(n_iter):
     # Save original array and png
     (original_imgs,) = maps_dset.get_batch(itr, batch_size=batch_size)
     np.save(npy_folder / f"original_imgs_{itr + 1:04d}.npy", original_imgs.numpy())
-    fig, _ = plot_image_grid(original_imgs.squeeze())
+    fig, _ = plot_image_grid(ldm_sampler.scaler.scale(original_imgs).squeeze())
     fig.savefig(img_folder / f"img_{itr + 1:04d}_original.png")
     plt.close(fig)
 

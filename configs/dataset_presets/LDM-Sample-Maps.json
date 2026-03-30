@@ -1,0 +1,14 @@
+{
+    "dataset": "micromaps-DR3-opt-1024px-spacing=1",
+    "dataset_lookup": "MICROMAP_SUBSETS_ARROW_HOPPER",
+    "img_context": null,
+    "catalog_context": null,
+    "data_transform": [
+        "HFDatasetTransformCrop", {"crop_size": 512, "random_crop": false}
+    ],
+    "ctxt_scalers": {},
+    "weights_file": null,
+    "weights_fn": null,
+    "max_beam_arcsec": 6,
+    "blank_center": {}
+}

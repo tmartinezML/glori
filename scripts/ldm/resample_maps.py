@@ -15,6 +15,7 @@ from glori.data.load import load_mosaic, load_fits_catalog, load_lotss_catalog
 from glori.infra.logging import get_logger
 
 from glori.analysis.bdsf_analysis import *
+from glori.config.swiit_config import SWIITSamplerConfig
 from glori.models.load import parse_lightning_ckpt
 from glori.inference.swiit_sampler import SWIITSampler
 from glori.data.obs.micromaps.utils import (
@@ -22,6 +23,8 @@ from glori.data.obs.micromaps.utils import (
     get_model_image,
     reduce_context_map,
 )
+import glori.analysis.ldm.io as ldmio
+import glori.analysis.ldm.bdsf as ldmbdsf
 
 # Read first argument --debug for debug mode
 debug_mode = len(sys.argv) > 1 and sys.argv[1] == "--debug"
@@ -39,13 +42,11 @@ print(art.text2art("LDM Resample", font="cybermedium"))
 logger.divider()
 
 # Model settings
-denoiser = "LDM-Denoiser-WnetCC-v4"
+denoiser = "LDM-Denoiser-WnetCC-v5"
 denoiser_ckpt = "best"
-uncond_denoiser = "LDM-Denoiser-Uncond-128"
+uncond_denoiser = None
 uncond_denoiser_ckpt = "best"
-vae = "VQ-VAE-256"
-sampling_type = "ICM"  # "LDM or "ICM"
-ctxt_type = "cat"  # "model" or "cat"
+vae = "VQ-VAE-256-DR3opt-FT"
 
 # Sampling settings
 latent_size = 128
@@ -57,31 +58,34 @@ f_inner = 1
 f_ext_ctxt = 2
 resample_first = False
 drop_inpainting_ctxt_at = -1
-do_inpainting = True
 use_inpainting_replacement = True
-catalog_mode = "combined"  # options: "combined", "separate"
 scale_ctxt = False
 save_intermediates = False
 device = "cuda:1"
 
+swiit_config = SWIITSamplerConfig(
+    denoiser="LDM-Denoiser-WnetCC-v5",
+    denoiser_ckpt="last-best",
+    vae="VQ-VAE-256-DR3opt-FT",
+    vae_ckpt="best",
+    device="cuda:1",
+)
+
 # Sampling blueprint settings
-sampling_steps = (5, 5)
-mask_coverage = 0.5
-mask_overlap = int(mask_coverage * latent_size)
-stride = latent_size - mask_overlap
-img_mask_overlap = int(mask_coverage * image_size)
-img_stride = image_size - img_mask_overlap
-latent_map_size = tuple(latent_size + (s - 1) * stride for s in sampling_steps)
+sampling_steps = (3, 7)
+latent_map_size = tuple(
+    latent_size + (s - 1) * swiit_config.stride for s in sampling_steps
+)
 img_map_size = tuple(s * f_vae for s in latent_map_size)
 latent_map_height, latent_map_width = latent_map_size
 mosaics = None
-batch_size = 8
 batch_repeated = False
 max_beam_arcsec = 6
 
 # Experiment settings
 seed = 69
 noise_seed = 42
+batch_size = 16
 n_iter = 4
 bdsf_workers = 8  # Number of parallel workers for BDSF analysis
 do_bdsf = True
@@ -95,12 +99,14 @@ comments = ""
 # Apply debug mode settings
 if debug_mode:
     sampling_steps = (2, 2)
-    latent_map_size = tuple(latent_size + (s - 1) * stride for s in sampling_steps)
+    latent_map_size = tuple(
+        latent_size + (s - 1) * swiit_config.stride for s in sampling_steps
+    )
     img_map_size = tuple(s * f_vae for s in latent_map_size)
     latent_map_height, latent_map_width = latent_map_size
     n_iter = 1
     batch_size = 2
-    timesteps = 2
+    timesteps = 25
 
 logger = get_logger(__name__)
 if debug_mode:
@@ -201,35 +207,22 @@ match mosaics:
 
 
 # Load the catalog
-if ctxt_type == "cat":
-    logger.info("Using catalog-based context. Loading catalog...")
-    cat = load_lotss_catalog(
-        select_cols=[
-            "Source_Name",
-            "RA",
-            "DEC",
-            "Total_flux",
-            "Peak_flux",
-            "Maj",
-            # "Mosaic_ID",
-        ]
-    )
+logger.info("Using catalog-based context. Loading catalog...")
+cat = load_lotss_catalog(
+    select_cols=[
+        "Source_Name",
+        "RA",
+        "DEC",
+        "Total_flux",
+        "Peak_flux",
+        "Maj",
+        # "Mosaic_ID",
+    ]
+)
 
 # Load the sampler
 ckpt_filename = str(parse_lightning_ckpt(denoiser_ckpt, model_name=denoiser))
-icm_sampler = SWIITSampler(
-    denoiser=denoiser,
-    denoiser_ckpt=denoiser_ckpt,
-    uncond_denoiser=uncond_denoiser,
-    uncond_denoiser_ckpt=uncond_denoiser_ckpt,
-    vae=vae,
-    device=device,
-    image_size=image_size,
-    latent_size=latent_size,
-    div_stride=f_inner,
-    f_ext_ctxt=f_ext_ctxt,
-    mask_coverage=mask_coverage,
-)
+icm_sampler = SWIITSampler(config=swiit_config)
 
 
 # Convenience function for getting the slice of the central cutout
@@ -287,33 +280,25 @@ for itr in range(n_iter):
     for i, mosaic in tqdm(
         enumerate(mosaics_itr), desc="Loading mosaics", total=len(mosaics_itr)
     ):
+
+        # Load mosaic and cut out central region
         img, wcs = load_mosaic(mosaic)
         sl1, sl2 = get_slices(img, img_map_size)
         img_cut, wcs_cut = img[sl1, sl2], wcs[sl1, sl2]
 
-        match ctxt_type:
-            case "cat":
-                ctxt, ctxt_cat = context_map_by_wcs(
-                    wcs_cut,
-                    cat,
-                    scale_output=False,
-                )
-                ctxt_red = reduce_context_map(
-                    ctxt,
-                    scale_output=scale_ctxt,
-                    input_scaled=False,
-                )
-                # Scale location map to [-1, 1]
-                ctxt_red[0] = ctxt_red[0] * 2 - 1
-
-            case "model":
-                logger.info("Using model-based context.")
-                ctxt = get_model_image(mosaic, which="PyBDSF") * 1e3
-                sl1, sl2 = get_slices(ctxt, img_map_size)
-                ctxt = np.expand_dims(ctxt[sl1, sl2], axis=0)
-                ctxt_red = rescale(ctxt, 1 / 4, anti_aliasing=False, channel_axis=0)
-            case _:
-                raise ValueError(f"Unknown context type: {ctxt_type}")
+        # Extract context map from catalog
+        ctxt, ctxt_cat = context_map_by_wcs(
+            wcs_cut,
+            cat,
+            scale_output=False,
+        )
+        ctxt_red = reduce_context_map(
+            ctxt,
+            scale_output=scale_ctxt,
+            input_scaled=False,
+        )
+        # Scale location map to [-1, 1]
+        ctxt_red[0] = ctxt_red[0] * 2 - 1
 
         img_cut_batch[i] = img_cut
         ctxt_red_batch[i] = ctxt_red
@@ -334,13 +319,11 @@ for itr in range(n_iter):
     sampling_output = icm_sampler.sample(
         batch_size=batch_size,
         ctxt_map=torch.from_numpy(ctxt_red_batch).to(torch.float32),
-        guidance_strength=guidance_strength,
         save_intermediates=save_intermediates,
         timesteps=timesteps,
+        guidance_strength=guidance_strength,
         drop_inpainting_ctxt_at=drop_inpainting_ctxt_at,
-        do_inpainting=do_inpainting,
         use_inpainting_replacement=use_inpainting_replacement,
-        catalog_mode=catalog_mode,
     )
     if save_intermediates:
         img_out, _, intermediates = sampling_output
@@ -414,121 +397,66 @@ for itr in range(n_iter):
 big_img_batch = np.concatenate(img_batches, axis=0)
 big_img_cut_batch = np.concatenate(img_cut_batches, axis=0)
 
-
-def process_img(img_idx, img_batch, out_folder, file_prefix="img"):
-    """Process a single batch with BDSF analysis"""
-    try:
-        # Extract single image from batch
-        img = img_batch[img_idx].squeeze()
-
-        # Run BDSF analysis with output suppressed
-        with (
-            contextlib.redirect_stdout(open(os.devnull, "w")),
-            contextlib.redirect_stderr(open(os.devnull, "w")),
-        ):
-            result = tiered_bdsf_wrapper(img, quiet=True)
-
-        # Save result
-        save_multistep_output(
-            result, f"{file_prefix}-{img_idx:04d}", out_parent=out_folder
-        )
-
-        return img_idx, True, None
-    except Exception as e:
-        return img_idx, False, str(e)
-
-
 if do_bdsf:
-    # Run tiered bdsf wrapper in parallel
-    logger.divider()
-    logger.info("Running BDSF analysis in parallel...")
-
-    # Set number of workers - ThreadPoolExecutor can handle more workers since it's lighter
-    max_workers = min(
-        os.cpu_count(), bdsf_workers
-    )  # Cap at 8 to avoid overwhelming the system
-    logger.info(f"Using {max_workers} workers for BDSF analysis")
-
-    # Run parallel processing with ThreadPoolExecutor
-    results = {}
-    img_indices = list(range(len(big_img_batch)))
-
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
-        future_to_batch = {
-            executor.submit(process_img, img_idx, big_img_batch, bdsf_folder): img_idx
-            for img_idx in img_indices
-        }
-
-        # Process results with progress bar
-        with tqdm(total=len(img_indices), desc="BDSF Analysis") as pbar:
-            for future in concurrent.futures.as_completed(future_to_batch):
-                result = future.result()
-                img_idx, success, error = result
-                results[img_idx] = result
-                pbar.update(1)
-
-                # Log any errors
-                if not success:
-                    logger.warning(f"Image {img_idx} failed: {error}")
-
-    # Get results into correct order
-    results = [results[i] for i in range(len(img_indices))]
-
-    # Collect successful results
-    successful_images = [r[0] for r in results if r[1]]
-    failed_images = [r[0] for r in results if not r[1]]
-
-    logger.info(
-        f"BDSF analysis complete: {len(successful_images)} successful, {len(failed_images)} failed"
+    results, n_successful_images, n_failed_images = ldmbdsf.run_bdsf_parallel(
+        big_img_batch, bdsf_folder, logger=logger, max_workers=bdsf_workers
     )
-
 
 if do_bdsf_originals:
-    logger.divider()
-    logger.info("Running BDSF analysis on original cutouts...")
-
-    # Run parallel processing with ThreadPoolExecutor
-    original_results = {}
-    original_img_indices = list(range(len(big_img_cut_batch)))
-
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
-        future_to_batch = {
-            executor.submit(
-                process_img,
-                img_idx,
-                big_img_cut_batch,
-                bdsf_folder,
-                file_prefix="original",
-            ): img_idx
-            for img_idx in original_img_indices
-        }
-
-        # Process results with progress bar
-        with tqdm(
-            total=len(original_img_indices), desc="BDSF Analysis on Originals"
-        ) as pbar:
-            for future in concurrent.futures.as_completed(future_to_batch):
-                result = future.result()
-                img_idx, success, error = result
-                original_results[img_idx] = result
-                pbar.update(1)
-
-                # Log any errors
-                if not success:
-                    logger.warning(f"Original image {img_idx} failed: {error}")
-
-    # Get results into correct order
-    original_results = [original_results[i] for i in range(len(original_img_indices))]
-
-    # Collect successful results
-    successful_original_images = [r[0] for r in original_results if r[1]]
-    failed_original_images = [r[0] for r in original_results if not r[1]]
-
-    logger.info(
-        f"BDSF analysis on originals complete: {len(successful_original_images)} successful, {len(failed_original_images)} failed"
+    original_results, n_successful_original_images, n_failed_original_images = (
+        ldmbdsf.run_bdsf_parallel(
+            big_img_cut_batch,
+            bdsf_folder,
+            logger=logger,
+            max_workers=bdsf_workers,
+            file_prefix="original",
+        )
     )
+
+    # logger.divider()
+    # logger.info("Running BDSF analysis on original cutouts...")
+
+    # # Run parallel processing with ThreadPoolExecutor
+    # original_results = {}
+    # original_img_indices = list(range(len(big_img_cut_batch)))
+
+    # with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+    #     # Submit all tasks
+    #     future_to_batch = {
+    #         executor.submit(
+    #             process_img,
+    #             img_idx,
+    #             big_img_cut_batch,
+    #             bdsf_folder,
+    #             file_prefix="original",
+    #         ): img_idx
+    #         for img_idx in original_img_indices
+    #     }
+
+    #     # Process results with progress bar
+    #     with tqdm(
+    #         total=len(original_img_indices), desc="BDSF Analysis on Originals"
+    #     ) as pbar:
+    #         for future in concurrent.futures.as_completed(future_to_batch):
+    #             result = future.result()
+    #             img_idx, success, error = result
+    #             original_results[img_idx] = result
+    #             pbar.update(1)
+
+    #             # Log any errors
+    #             if not success:
+    #                 logger.warning(f"Original image {img_idx} failed: {error}")
+
+    # # Get results into correct order
+    # original_results = [original_results[i] for i in range(len(original_img_indices))]
+
+    # # Collect successful results
+    # successful_original_images = [r[0] for r in original_results if r[1]]
+    # failed_original_images = [r[0] for r in original_results if not r[1]]
+
+    # logger.info(
+    #     f"BDSF analysis on originals complete: {len(successful_original_images)} successful, {len(failed_original_images)} failed"
+    # )
 
 
 logger.info("Saving summary...")
@@ -548,28 +476,25 @@ summary.update(
         batch_size=batch_size,
         n_iter=n_iter,
         cutout_size_px=img_map_size,
-        context_type=ctxt_type,
         out_folder_lbl=out_folder_lbl,
         guidance_strength=guidance_strength,
         f_inner=f_inner,
         f_ext_ctxt=f_ext_ctxt,
         drop_inpainting_ctxt_at=drop_inpainting_ctxt_at,
-        use_latent_ctxt=do_inpainting,
         use_inpainting_replacement=use_inpainting_replacement,
-        catalog_mode=catalog_mode,
         save_intermediates=save_intermediates,
         do_bdsf=do_bdsf,
         bdsf_workers=bdsf_workers if do_bdsf else None,
         total_images=len(big_img_batch) if do_bdsf else None,
-        successful_images=len(successful_images) if do_bdsf else None,
-        failed_images=len(failed_images) if do_bdsf else None,
+        successful_images=n_successful_images if do_bdsf else None,
+        failed_images=n_failed_images if do_bdsf else None,
         do_bdsf_originals=do_bdsf_originals,
         total_original_images=len(img_cut_batch) if do_bdsf_originals else None,
         successful_original_images=(
-            len(successful_original_images) if do_bdsf_originals else None
+            n_successful_original_images if do_bdsf_originals else None
         ),
         failed_original_images=(
-            len(failed_original_images) if do_bdsf_originals else None
+            n_failed_original_images if do_bdsf_originals else None
         ),
         comments=comments,
     )

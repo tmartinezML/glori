@@ -4,8 +4,8 @@ from dataclasses import dataclass
 @dataclass
 class SWIITSamplerConfig:
     denoiser: str | None = None
-    denoiser_ckpt: str = "best"
-    vae: str = "VQ-VAE-256"
+    denoiser_ckpt: str = "last-best"
+    vae: str = "VQ-VAE-256-DR3opt-FT"
     vae_ckpt: str = "best"
     uncond_denoiser: str | None = None
     uncond_denoiser_ckpt: str = "best"
@@ -19,6 +19,7 @@ class SWIITSamplerConfig:
     resample_first: bool = False
     do_inpainting: bool = True
     decoding_stride: int | None = None
+    scaler: str = "LOFAR_scaler_II"
 
     @property
     def latent_size(self) -> int:

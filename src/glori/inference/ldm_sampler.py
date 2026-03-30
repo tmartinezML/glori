@@ -144,15 +144,11 @@ class LDMSampler:
         **diffusion_kw,
     ):
 
-        # If only context is passed, we have to create a dummy inpainting context
-        if img_context is not None and inpainting_context is None:
-            inpainting_mask = torch.tensor([1, 1, 1, 1]).reshape(1, 1, 2, 2).float()
-            inpainting_mask = torch.nn.functional.interpolate(
-                inpainting_mask,
-                scale_factor=self.settings.latent_size // 2,
-                mode="nearest",
-            )
-            inpainting_mask = inpainting_mask.repeat(img_context.shape[0], 1, 1, 1)
+        # If only image context is passed, we have to create a dummy inpainting context
+        if inpainting_context is None:
+            inpainting_mask = torch.ones_like(
+                img_context[:, :1, :, :]
+            )  # Assuming the first channel is the mask channel
             inpainting_context = (
                 inpainting_mask,
                 inpainting_mask.repeat(1, self.settings.latent_channels, 1, 1),
@@ -231,7 +227,7 @@ class LDMSampler:
             latents = torch.from_numpy(latents).to(self.settings.device)
 
         with torch.no_grad():
-            decoded_image = self.vae.decode(latents)
+            decoded_image = self.vae.decode_code(latents)
 
         self.vae = self.vae.cpu()
 

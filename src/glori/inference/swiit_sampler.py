@@ -14,6 +14,7 @@ from glori.models.diffusion.denoiser import Denoiser
 from glori.inference.dm_sampler import DMSampler
 from glori.models.networks.modules import configModuleBaseLightning
 from glori.config.swiit_config import SWIITSamplerConfig
+from glori.data.trf.scalers import LOFARScaler
 
 # Set up tqdm progress bar depending on whether we're in a Jupyter environment or not
 if is_jupyter:
@@ -74,6 +75,9 @@ class SWIITSampler:
             return_steps=False,
         )
         self.sampler.logger.disabled = True  # Disable sampler logging
+
+        # Load scaler
+        self.scaler = LOFARScaler.load(self.config.scaler)
 
         self.logger.info("ICM Sampler initialized.")
 

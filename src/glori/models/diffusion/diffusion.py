@@ -145,7 +145,7 @@ def edm_sampling(
     if label_batch is not None:
         label_batch = prepare_tensor(label_batch, name="Label batch", dtype=torch.long)
 
-    # If passed, prepare mask input
+    # If passed, prepare inpainting context
     if inpainting_context is not None:
         inpainting_mask, inpainting_img = inpainting_context
         inpainting_mask = prepare_tensor(

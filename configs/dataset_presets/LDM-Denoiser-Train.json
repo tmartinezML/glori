@@ -1,0 +1,18 @@
+{
+    "dataset": "micromap_encodings-DR3-opt-1024px-spacing=1",
+    "dataset_lookup": "MICROMAP_SUBSETS_ARROW_BABBAGE",
+    "img_context": null,
+    "catalog_context": "context_downscaled_d=4_f=2.npy",
+    "data_transform": "HFDatasetTransformRaw",
+    "ctxt_transform": {
+        "context_downscaled_d=4_f=2.npy": "CatalogContextTransform"
+    },
+    "ctxt_scalers": {},
+    "weights_file": null,
+    "weights_fn": null,
+    "max_beam_arcsec": 6,
+    "random_crop": 128,
+    "crop_fctxt": [2],
+    "crop_sctxt": [2],
+    "blank_center": {}
+}

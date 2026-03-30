@@ -211,10 +211,10 @@ def tiered_bdsf_wrapper(img, wcs=None, tmpdir=paths.ANALYSIS_PARENT / "tmp", **k
         srl_f, gaul_f, model_f, resid_f = run_tiered_bdsf(
             img_fpath, img_fpath, **kwargs
         )
-
         # Make output dict
         srl = load_fits_catalog(srl_f)
         gaul = load_fits_catalog(gaul_f)
+
         # Bring to desired units
         for cat in [srl, gaul]:
             cat["Total_flux"] *= 1e3

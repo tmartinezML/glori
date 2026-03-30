@@ -2,29 +2,25 @@
     "model_name": "LDM-Denoiser-WnetCC-v5",
     "model_class": "Denoiser",
     "backbone": "Unet",
+    "dataset": "micromap-encodings-DR3-opt-1024px-spacing=1",
+    "dataset_lookup": "MICROMAP_SUBSETS_ARROW_BABBAGE",
+    "weights_file": null,
+    "weights_fn": null,
+    "max_beam_arcsec": 6,
     "override_files": false,
     "pickup": true,
     "weights_only": false,
     "checkpoint": "last",
     "tune_lr": false,
     "overfit_batch": false,
-    "dataset_config": {
-        "dataset": "micromap_encodings-DR3-opt-1024px-spacing=1",
-        "dataset_lookup": "MICROMAP_SUBSETS_ARROW_BABBAGE",
-        "img_context": null,
-        "catalog_context": "context_downscaled_d=4_f=2.npy",
-        "ctxt_transform": {
-            "context_downscaled_d=4_f=2.npy": "CatalogContextTransform"
-        },
-        "ctxt_scalers": {},
-        "weights_file": null,
-        "weights_fn": null,
-        "max_beam_arcsec": 6,
-        "random_crop": 128,
-        "crop_fctxt": [2],
-        "crop_sctxt": [2],
-        "blank_center": {}
+    "img_context": null,
+    "catalog_context": "context_downscaled_d=4_f=2.npy",
+    "ctxt_transform": {
+        "context_downscaled_d=4_f=2.npy": "CatalogContextTransform"
     },
+    "ctxt_scalers": {},
+    "catalog_topk": null,
+    "topk_min_val": null,
     "model_config" : {
         "use_catalog_ctxt": true,
         "use_cross_attn": false,
@@ -66,6 +62,10 @@
         "devices": [
             0
         ],
+        "random_crop": 128,
+        "crop_fctxt": [2],
+        "crop_sctxt": [2],
+        "blank_center": {},
         "use_mask": true,
         "use_ext_ctxt_mask": true,
         "ext_mask_p": [0.9, 0.1, 0.1],

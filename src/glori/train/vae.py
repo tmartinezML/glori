@@ -178,7 +178,7 @@ if __name__ == "__main__":
         scaler=conf.get("scaler"),
     )
     crop_trf = partial(
-        T.WebdatasetTransformCrop,
+        T.HFDatasetTransformCrop,
         crop_size=conf.get("image_size", 256),
     )
     num_workers = conf.get("num_workers", num_workers)

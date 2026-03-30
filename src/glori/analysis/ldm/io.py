@@ -10,47 +10,49 @@ from ..bdsf_analysis import (
     load_multistep_output,
 )
 import glori.settings.paths as paths
+from glori.infra.logging import get_logger
+
+logger = get_logger(__name__)
 
 
-def load_sweep_result(run_name, sampling_type="check", bdsf_empty_is_err=True):
-    assert sampling_type in [
-        "ICM",
-        "LDM",
-        "check",
-    ], "sampling_type must be 'ICM', 'LDM', or 'check'"
+def load_sampling_result(run_name, parent=None, missing_is_error={}):
 
-    try:
-        if sampling_type == "check":
-            res_parent = sorted(
-                # (paths.ANALYSIS_PARENT / "ldm").glob(f"*-sweep_*{run_name}")
-                (paths.ANALYSIS_PARENT / "ldm").glob(f"*{run_name}*")
-            )[-1]
-        else:
-            # res_parent = paths.ANALYSIS_PARENT / f"ldm/{sampling_type}-sweep_{run_name}"
-            res_parent = sorted(
-                (paths.ANALYSIS_PARENT / "ldm").glob(
-                    f"{sampling_type}-sweep_*{run_name}"
-                )
-            )[-1]
-    except IndexError:
+    # Identify results directory based on run name and parent directory
+    if parent is None:
+        parent = paths.ANALYSIS_PARENT / "ldm"
+    parent_candidates = sorted(parent.glob(f"*{run_name}*"))
+    if len(parent_candidates) == 0:
         raise FileNotFoundError(
-            f"No results found for run name: {run_name} (sampling_type={sampling_type})"
+            f"No results found for run name: {run_name} in {parent}."
         )
-
-    print(f"Loading results for <{run_name}>...")
-
+    res_parent = parent_candidates[-1]
     if not res_parent.exists():
         raise FileNotFoundError(f"Results directory not found: {res_parent}")
+    del parent, parent_candidates
+
+    logger.info(f"Loading results for <{run_name}>...")
+
+    # Check entries in missing_is_error dict
+    valid_keys = {"summary", "bdsf", "original_bdsf"}
+    if isinstance(missing_is_error, bool):
+        missing_is_error = {key: missing_is_error for key in valid_keys}
+    if any(k not in valid_keys for k in missing_is_error.keys()):
+        raise ValueError(
+            f"Invalid keys in missing_is_error: {missing_is_error.keys()}. Valid keys are: {valid_keys}."
+        )
 
     # Load summary
     if (summary_npy := res_parent / "npy/extended_summary.npy").exists():
         summary = np.load(summary_npy, allow_pickle=True).item()
     elif (summary_json := res_parent / "summary.json").exists():
         summary = json.loads(summary_json.read_text())
-    else:
+    elif missing_is_error.get("summary", True):
         raise FileNotFoundError(
             f"No summary file found in {res_parent}. Expected 'npy/extended_summary.npy' or 'summary.json'."
         )
+    else:
+        logger.warning(f"No summary file found in {res_parent}.")
+        summary = {}
 
     # Load sampled images
     img_batch = np.concatenate(
@@ -94,16 +96,17 @@ def load_sweep_result(run_name, sampling_type="check", bdsf_empty_is_err=True):
         prefix = "batch"
     elif len(list((res_parent / "bdsf").glob("img-*"))):
         prefix = "img"
-    elif bdsf_empty_is_err:
+    elif missing_is_error.get("bdsf", True):
         raise FileNotFoundError(f"No BDSF results found in {res_parent / 'bdsf'}.")
     else:
-        print(
+        logger.info(
             f"No BDSF results found in {res_parent / 'bdsf'}. Continuing without error."
         )
         prefix = "img"  # Default
     bdsf_results = [
         load_multistep_output(
-            res_parent / f"bdsf/{prefix}-{img_idx:04d}", empty_is_err=bdsf_empty_is_err
+            res_parent / f"bdsf/{prefix}-{img_idx:04d}",
+            empty_is_err=missing_is_error.get("bdsf", True),
         )
         for img_idx in trange(len(img_batch), desc="Loading BDSF results")
     ]
@@ -115,7 +118,7 @@ def load_sweep_result(run_name, sampling_type="check", bdsf_empty_is_err=True):
         orig_bdsf_results = [
             load_multistep_output(
                 res_parent / f"bdsf/{prefix}-{img_idx:04d}",
-                empty_is_err=bdsf_empty_is_err,
+                empty_is_err=missing_is_error.get("original_bdsf", True),
             )
             for img_idx in trange(len(img_batch), desc="Loading original BDSF results")
         ]
@@ -136,15 +139,15 @@ def load_sweep_result(run_name, sampling_type="check", bdsf_empty_is_err=True):
         except ValueError:
             pos_masks = None
     else:
-        print("No input catalogs found.")
+        logger.info("No input catalogs found.")
         input_catalogs = None
         pos_masks = None
 
-    # Load wcs and
+    # Load wcs and srls
     wcs = bdsf_results[0]["wcs"]
     srls = [result["catalogs"]["srl"] for result in bdsf_results]
 
-    print("Done.")
+    logger.info("Done.")
 
     return {
         "img_batch": img_batch,
@@ -163,7 +166,7 @@ def load_sweep_result(run_name, sampling_type="check", bdsf_empty_is_err=True):
 
 def prepare_directory(out_folder, override=False):
     if out_folder.exists() and override:
-        print(f"Output folder {out_folder} already exists. Deleting...")
+        logger.info(f"Output folder {out_folder} already exists. Deleting...")
         shutil.rmtree(out_folder)
     out_folder.mkdir(parents=True, exist_ok=True)
     sub_folder_names = "bdsf", "images", "npy"

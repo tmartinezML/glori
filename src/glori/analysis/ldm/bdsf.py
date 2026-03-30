@@ -11,7 +11,7 @@ import os
 from glori.infra.logging import get_logger
 
 
-def process_img(img_idx, img_batch, out_folder):
+def process_img(img_idx, img_batch, out_folder, prefix="img"):
     """Process a single batch with BDSF analysis"""
     try:
         # Extract single image from batch
@@ -25,14 +25,16 @@ def process_img(img_idx, img_batch, out_folder):
             result = tiered_bdsf_wrapper(img, quiet=True)
 
         # Save result
-        save_multistep_output(result, f"img-{img_idx:04d}", out_parent=out_folder)
+        save_multistep_output(result, f"{prefix}-{img_idx:04d}", out_parent=out_folder)
 
         return img_idx, True, None
     except Exception as e:
         return img_idx, False, str(e)
 
 
-def run_bdsf_parallel(img_batch, out_folder, logger=None, max_workers=16, **kwargs):
+def run_bdsf_parallel(
+    img_batch, out_folder, logger=None, max_workers=16, file_prefix="img", **kwargs
+):
     if logger is None:
         logger = get_logger("bdsf-parallel")
     # Run tiered bdsf wrapper in parallel
@@ -52,7 +54,9 @@ def run_bdsf_parallel(img_batch, out_folder, logger=None, max_workers=16, **kwar
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks
         future_to_batch = {
-            executor.submit(process_img, img_idx, img_batch, out_folder): img_idx
+            executor.submit(
+                process_img, img_idx, img_batch, out_folder, prefix=file_prefix
+            ): img_idx
             for img_idx in img_indices
         }
 

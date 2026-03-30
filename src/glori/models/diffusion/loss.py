@@ -1,7 +1,32 @@
-from glori.models.diffusion.masks import sample_sigmas
-
-
 import torch
+
+
+def sample_sigmas(
+    img_batch,
+    P_mean=-1.2,
+    P_std=1.2,
+):
+    """
+    Sample noise levels from a log-normal distribution. used during training for
+    adding noise to the input images.
+
+    Parameters
+    ----------
+    img_batch : torch.Tensor
+        Input image batch, used to infer shape.
+    P_mean : float, optional
+        log(mean) parameter for the log-normal distribution, by default -1.2
+    P_std : float, optional
+        log(std) parameter for the log-normal distribution, by default 1.2
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
+    rnd_normal = torch.randn([img_batch.shape[0], 1, 1, 1], device=img_batch.device)
+    sigmas = (rnd_normal * P_std + P_mean).exp()
+    return sigmas
 
 
 def edm_loss(

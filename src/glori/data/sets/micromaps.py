@@ -20,6 +20,7 @@ from torch.utils.data import (
 
 import glori.settings.paths as paths
 from glori.infra.logging import get_logger
+from glori.config.micromaps_config import MicromapsConfig, resolve_micromap_kwargs
 import glori.data.trf.transforms as T
 import glori.data.load as load
 from glori.data.trf.scalers import LOFARScaler
@@ -38,19 +39,18 @@ class MicromapDatasetHF:
 
     def __init__(
         self,
-        dset,
-        dset_lookup=paths.MICROMAP_SUBSETS_ARROW,
-        weights_file=None,
-        weights_fn=lambda x: x.sum() ** 2 + x.prod(),
+        dataset,
+        dataset_lookup=paths.MICROMAP_SUBSETS_ARROW,
         split="train",
-        mode="LDM-train-mask",
-        custom_transform=None,
+        output_tuple=("npy",),
+        max_beam_arcsec=None,
+        data_transform=None,
         ctxt_transform=None,
         post_transform=None,
         scaler="LOFAR_scaler_II",
-        output_tuple=("npy",),
+        weights_file=None,
+        weights_fn=None,
         missing_is_error=True,
-        max_beam_arcsec=None,
     ):
         """
         Args:
@@ -59,7 +59,7 @@ class MicromapDatasetHF:
             weights_fn: Function to aggregate weights (default: np.sum)
             split: Dataset split ('train', 'val', 'test')
             mode: Transform mode ('VAE-train', 'LDM-train-mask', etc.)
-            custom_transform: Custom transform function
+            data_transform: Transform function for data
             ctxt_transform: Dict of transforms for context keys
             post_transform: Transform applied after main transforms
             scaler: Scaler name or None
@@ -70,163 +70,78 @@ class MicromapDatasetHF:
         self.logger = get_logger("MMDsHF")
 
         # Assume arrow datasets are in sibling directory
-        self.path = load.parse_dset_path(dset, lookup=dset_lookup)
-
+        self.path = load.parse_dset_path(dataset, lookup=dataset_lookup)
         if not self.path.exists():
             raise FileNotFoundError(
                 f"Arrow dataset not found at {self.path}. "
                 f"Please run tar2arrow.py first."
             )
 
-        self.split = split
-        self.mode = mode
+        self.output_tuple = output_tuple
         self.missing_is_error = missing_is_error
 
         # Load arrow dataset
         self.arrow_path = self.path / f"{split}.arrow"
-
         if not self.arrow_path.exists():
             raise FileNotFoundError(
                 f"No arrow files found in {self.path / split}. "
                 f"Please run tar2arrow.py first."
             )
         self.logger.info(f"Loading arrow dataset from\n\t{self.arrow_path}")
-        sel = output_tuple
-        if "__key__" not in sel:
-            sel += ("__key__",)
+
+        select_cols = self.output_tuple
+        if "__key__" not in select_cols:
+            select_cols += ("__key__",)
         self.dataset = (
             load_from_disk(str(self.arrow_path))
             .sort("__key__")
-            .select_columns(list(sel))
+            .select_columns(list(select_cols))
         )
         self.logger.info(f"Loaded {len(self.dataset):_} samples")
         # Housekeeping
         self.dataset.cleanup_cache_files()
 
         # Load weights dict
+        self.weights_dict = None
+        self.weights_fn = None
         if weights_file is not None:
-            match weights_file:
-                case str():
-                    if "/" in weights_file:
-                        weights_path = Path(weights_file)
-                    else:
-                        weights_path = self.path / "metadata" / weights_file
-                case Path():
-                    weights_path = weights_file
-                case _:
-                    raise TypeError(
-                        f"weights_file must be str or Path, got {type(weights_file)}"
-                    )
-
-            if not weights_path.exists():
-                raise FileNotFoundError(
-                    f"Weights file not found in metadata:\n\t{weights_path}"
-                )
-            self.logger.info(f"Loading weights from\n\t{weights_path}")
-            self.weights_dict = np.load(weights_path, allow_pickle=True).item()
-            self.weights_fn = weights_fn
-
-            if len(self.weights_dict) < len(self.dataset):
-                self.logger.info(
-                    f"Filtering out {(len(self.dataset) - len(self.weights_dict)):_} samples without weights..."
-                )
-                keys = np.array(self.dataset["__key__"], dtype=np.str_)
-                select_idxs = np.argwhere(
-                    ~np.isin(
-                        keys,
-                        np.array(list(set(keys) - set(self.weights_dict.keys()))),
-                        assume_unique=True,
-                    )
-                ).flatten()
-                self.dataset = self.dataset.select(select_idxs.tolist())
-
-            elif len(self.weights_dict) > len(self.dataset):
-                self.logger.info(
-                    f"Filtering weights_dict to match dataset of length {len(self.dataset):_}..."
-                )
-                self._filter_weights_dict()
-
-            self.logger.info(f"Dataset has {len(self.dataset):_} samples.")
-
-        else:
-            self.weights_dict = None
-            self.weights_fn = None
+            self._load_weights(weights_file, weights_fn)
 
         # If desired, filter for resolution
         if max_beam_arcsec is not None:
-            self.logger.info(
-                f"Filtering for Max beam size (arcsec): {max_beam_arcsec}."
-            )
-            keys = np.array(self.dataset["__key__"], dtype=np.str_)
-            pointing_info_df = pd.read_csv(
-                paths.LOFAR_DATA_PARENT / "DR3_pointing_lookup.csv", index_col="mosaic"
-            )
-            good_pointings = np.array(
-                pointing_info_df.index[
-                    pointing_info_df["Beam"] <= np.round(max_beam_arcsec / 3600, 5)
-                ],
-                dtype=np.str_,
-            )
-            select_idxs = np.argwhere(
-                np.isin(np.char.partition(keys, "-")[:, 0], good_pointings)
-            ).flatten()
-            self.dataset = self.dataset.select(select_idxs.tolist())
-
-            self._filter_weights_dict()
-            self.logger.info(f"Dataset has {len(self.dataset):_} samples.")
+            self._filter_for_max_beam(max_beam_arcsec)
 
         # Setup transforms
         self.transforms_dict = {}
-        self.scaler = LOFARScaler.load(scaler) if scaler is not None else None
-        self.data_transforms = None
-        if custom_transform is not None:
-            self.data_transforms = custom_transform
-            self.transforms_dict["npy"] = self.data_transforms
-        else:
-            self.set_transforms(mode)
+        if data_transform is not None:
+            self.transforms_dict["npy"] = data_transform
+        if ctxt_transform is not None:
+            self.transforms_dict.update(ctxt_transform)
 
-        # Store transform configs
-        if ctxt_transform is None:
-            ctxt_transform = {
-                k: T.CatalogContextTransform() for k in output_tuple if "context" in k
-            }
-        assert all(
-            key in output_tuple for key in ctxt_transform.keys()
-        ), f"ctxt_transform keys must be in output_tuple"
-        self.ctxt_transform = ctxt_transform
-        self.transforms_dict.update(ctxt_transform)
+        # Setup post-transform
+        if post_transform is None:
+            post_transform = lambda x: x
+        self.post_transform = post_transform
 
-        self.post_transform = (
-            post_transform if post_transform is not None else lambda x: x
-        )
-        self.output_tuple = output_tuple
+        # Load scaler
+        self.scaler = None
+        if scaler is not None:
+            self.scaler = LOFARScaler.load(scaler)
 
         # Set the dataset format to torch for efficient loading
         self.dataset.set_format(type="numpy")
 
         self.logger.info("HuggingFace dataset initialized.")
 
-    def set_transforms(self, mode):
-        """Set transforms based on mode."""
-        scale_fn = self.scaler.scale if self.scaler is not None else None
+    @classmethod
+    def from_config(cls, config: MicromapsConfig, **override) -> "MicromapDatasetHF":
+        """Create a MicromapDatasetHF from a MicromapsConfig, allowing for overrides."""
+        return cls(**resolve_micromap_kwargs(config, **override))
 
-        match mode:
-            case "raw":
-                self.data_transforms = T.WebdatasetTransformRaw()
-            case "maps-scaled":
-                self.data_transforms = T.WebdatasetTransformRaw(scale_fn=scale_fn)
-            case "VAE-train" | "VAE-eval":
-                self.data_transforms = T.MicroMapTransformVAE(scale_fn=scale_fn)
-            case "LDM-train-mask" | "LDM-eval-mask":
-                self.data_transforms = T.WebdatasetTransformRaw()
-            case "test":
-                self.data_transforms = T.MicromapTransformTest(scale_fn=scale_fn)
-            case _:
-                raise ValueError(f"Invalid mode: {mode}")
-
-        self.mode = mode
-        self.transforms_dict["npy"] = self.data_transforms
-        self.logger.info(f"Dataset mode set to '{mode}'.")
+    @classmethod
+    def from_preset(cls, preset: str | Path, **override) -> "MicromapDatasetHF":
+        """Create a MicromapDatasetHF from a preset name or path, allowing for overrides."""
+        return cls.from_config(MicromapsConfig.from_preset(preset), **override)
 
     def _filter_weights_dict(self):
         """Filter weights_dict to match current dataset keys."""
@@ -241,6 +156,55 @@ class MicromapDatasetHF:
                 f"Weights dict length must match dataset length after filtering, got "
                 f"{len(self.weights_dict):_} vs {len(self.dataset):_}"
             )
+
+    def _load_weights(self, weights_file, weights_fn):
+        weights_path = load.parse_weights_file(weights_file, parent=self.path)
+        self.logger.info(f"Loading weights from\n\t{weights_path}")
+        self.weights_dict = np.load(weights_path, allow_pickle=True).item()
+        self.weights_fn = weights_fn
+
+        if len(self.weights_dict) < len(self.dataset):
+            self.logger.info(
+                f"Filtering out {(len(self.dataset) - len(self.weights_dict)):_} samples without weights..."
+            )
+            keys = np.array(self.dataset["__key__"], dtype=np.str_)
+            select_idxs = np.argwhere(
+                ~np.isin(
+                    keys,
+                    np.array(list(set(keys) - set(self.weights_dict.keys()))),
+                    assume_unique=True,
+                )
+            ).flatten()
+            self.dataset = self.dataset.select(select_idxs.tolist())
+            self.logger.info(f"Dataset has {len(self.dataset):_} samples.")
+
+        elif len(self.weights_dict) > len(self.dataset):
+            self.logger.info(
+                f"Filtering weights_dict to match dataset of length {len(self.dataset):_}..."
+            )
+            self._filter_weights_dict()
+
+    def _filter_for_max_beam(self, max_beam_arcsec):
+        """Filter dataset for maximum beam size."""
+        self.logger.info(f"Filtering for Max beam size (arcsec): {max_beam_arcsec}.")
+        keys = np.array(self.dataset["__key__"], dtype=np.str_)
+        # TODO: This should probably not be hard-coded here
+        pointing_info_df = pd.read_csv(
+            paths.LOFAR_DATA_PARENT / "DR3_pointing_lookup.csv", index_col="mosaic"
+        )
+        good_pointings = np.array(
+            pointing_info_df.index[
+                pointing_info_df["Beam"] <= np.round(max_beam_arcsec / 3600, 5)
+            ],
+            dtype=np.str_,
+        )
+        select_idxs = np.argwhere(
+            np.isin(np.char.partition(keys, "-")[:, 0], good_pointings)
+        ).flatten()
+        self.dataset = self.dataset.select(select_idxs.tolist())
+
+        self._filter_weights_dict()
+        self.logger.info(f"Dataset has {len(self.dataset):_} samples.")
 
     def filter(self, *args, **kwargs):
         """Filter dataset using a filter function."""

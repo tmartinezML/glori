@@ -60,7 +60,7 @@ def EncodingTransformLDM(scale_fn=None):
     return transform
 
 
-def WebdatasetTransformRaw(scale_fn=None):
+def HFDatasetTransformRaw(scale_fn=None):
     transform = T.Compose(
         [
             T.Lambda(torch.from_numpy),
@@ -70,7 +70,7 @@ def WebdatasetTransformRaw(scale_fn=None):
     return transform
 
 
-def WebdatasetTransformCrop(scale_fn=None, crop_size=512, random_crop=False):
+def HFDatasetTransformCrop(scale_fn=None, crop_size=512, random_crop=False):
     transform = T.Compose(
         [
             T.Lambda(torch.from_numpy),
