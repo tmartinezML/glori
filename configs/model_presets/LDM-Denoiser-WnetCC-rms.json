@@ -4,7 +4,7 @@
     "model_class": "Denoiser",
     "backbone": "Unet",
     "override_files": false,
-    "pickup": false,
+    "pickup": true,
     "weights_only": false,
     "checkpoint": "last",
     "tune_lr": false,
@@ -61,7 +61,7 @@
     "train_config": {
         "context": [],
         "batch_size": 24,
-        "iterations": 400000,
+        "iterations": 250000,
         "learning_rate": 1e-05,
         "accumulate_grad_batches": 2,
         "scheduler": null,
