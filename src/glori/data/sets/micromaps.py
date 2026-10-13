@@ -26,7 +26,7 @@ import glori.data.load as load
 from glori.data.trf.scalers import LOFARScaler
 
 
-from datasets import load_from_disk, concatenate_datasets
+from datasets import load_from_disk
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
@@ -105,8 +105,11 @@ class MicromapDatasetHF:
             .select_columns(list(select_cols))
         )
         self.logger.info(f"Loaded {len(self.dataset):_} samples")
-        # Housekeeping
-        self.dataset.cleanup_cache_files()
+        # Housekeeping (stale caches in a dataset we can only read stay put)
+        try:
+            self.dataset.cleanup_cache_files()
+        except PermissionError as e:
+            self.logger.warning(f"Could not remove cache files: {e}")
 
         # Join sidecar context channel (before any filtering, so rows align)
         self.sidecar = None
@@ -183,19 +186,26 @@ class MicromapDatasetHF:
                 f"({len(sc_keys):_} vs {len(self.dataset):_} samples). "
                 "Was the sidecar built from this dataset and split?"
             )
-        self.dataset = concatenate_datasets(
-            [self.dataset, sc.select_columns([f"{column}_idx", f"{column}_val"])],
-            axis=1,
+        # Looked up by key per sample instead of joined as columns: a column
+        # join on the sorted dataset makes HF rewrite all of it to disk, and
+        # the key lookup stays correct after later select/filter calls.
+        self.sidecar = dict(
+            column=column,
+            append_to=append_to,
+            table=sc.select_columns([f"{column}_idx", f"{column}_val"]).with_format(
+                "numpy"
+            ),
+            row_by_key={k: i for i, k in enumerate(sc_keys)},
         )
-        self.sidecar = dict(column=column, append_to=append_to)
 
     def _append_sidecar_channel(self, sample, sample_dict):
         col, key = self.sidecar["column"], self.sidecar["append_to"]
+        row = self.sidecar["table"][self.sidecar["row_by_key"][sample["__key__"]]]
         target = torch.as_tensor(sample_dict[key])
         h, w = target.shape[-2:]
         channel = torch.zeros(h * w, dtype=target.dtype)
-        channel[torch.as_tensor(sample[f"{col}_idx"], dtype=torch.long)] = (
-            torch.as_tensor(sample[f"{col}_val"], dtype=target.dtype)
+        channel[torch.as_tensor(row[f"{col}_idx"], dtype=torch.long)] = (
+            torch.as_tensor(row[f"{col}_val"], dtype=target.dtype)
         )
         sample_dict[key] = torch.cat([target, channel.view(1, h, w)], dim=0)
 
