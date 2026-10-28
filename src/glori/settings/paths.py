@@ -1,3 +1,4 @@
+import os
 import urllib.request
 from pathlib import Path
 from indexed import IndexedOrderedDict
@@ -7,9 +8,13 @@ from glori.infra.logging import show_dl_progress
 
 # Base directories for code base & storage
 BASE_PARENT = Path(__file__).parent.parent.parent.parent
+# The installed package itself (src/glori in a clone, site-packages/glori otherwise)
+PACKAGE_PARENT = Path(__file__).parent.parent
 
-# CHANGE THIS IF DESIRED:
-STORAGE_PARENT = Path("/hs/fs08/data/group-brueggen/tmartinez")
+# CHANGE THIS IF DESIRED (or set the GLORI_STORAGE_PARENT environment variable):
+STORAGE_PARENT = Path(
+    os.environ.get("GLORI_STORAGE_PARENT", "/hs/fs08/data/group-brueggen/tmartinez")
+)
 STORAE_PARENT_HOPPER = Path("/storage/tmartinez")
 
 # Three main storage folders.
@@ -23,7 +28,10 @@ CACHE_DIR = STORAGE_PARENT / ".cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Model configuration presets
+# (repo root in a clone; the copy shipped inside the package for a regular install)
 CONFIG_PARENT = BASE_PARENT / "configs"
+if not CONFIG_PARENT.exists():
+    CONFIG_PARENT = PACKAGE_PARENT / "configs"
 MODEL_CONFIGS = IndexedOrderedDict(
     {f.stem: f for f in (CONFIG_PARENT / "model_presets").glob("*.json")}
 )
@@ -105,8 +113,8 @@ LOTSS_DR2_CAT = LOFAR_DATA_PARENT / "LoTSS_DR2_v110_masked.srl.fits"
 LOTSS_DR3_CAT = LOFAR_DATA_PARENT / "LoTSS_DR3_v0.5.srl.parquet"
 
 # Paths for map simulation files
-MAP_SHELL_SCRIPTS = BASE_PARENT / "src/glori/maps/shell_scripts"
-MAP_DEFAULTS = BASE_PARENT / "src/glori/maps/default_files"
+MAP_SHELL_SCRIPTS = PACKAGE_PARENT / "maps/shell_scripts"
+MAP_DEFAULTS = PACKAGE_PARENT / "maps/default_files"
 
 
 def cast_to_Path(path):

@@ -41,10 +41,16 @@ dependencies = [
     "wandb==0.16.4",
     "wget==3.2",
     "wids==0.1.11",
+    "nvidia-ml-py3==7.352.0",
+    "setuptools==81.0.0",
+    "vqtorch @ git+https://github.com/minyoungg/vqtorch.git@02e60a19bd742c17b0bf3e1925f23796d54cbeac",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 readme = "README.md"
 license = {text = "MIT"}
+
+[project.optional-dependencies]
+notebooks = ["ipykernel"]
 
 
 [tool.pdm]
@@ -60,3 +66,12 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["glori*"]
+
+# Non-Python files needed at runtime. `src/glori/configs` is a symlink to the
+# repo-level `configs/`, so the presets also ship with a non-editable install.
+[tool.setuptools.package-data]
+glori = [
+    "configs/*/*.json",
+    "maps/default_files/*",
+    "maps/shell_scripts/*",
+]

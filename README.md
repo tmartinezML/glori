@@ -93,22 +93,54 @@ Standard routine with your own [micromamba](https://mamba.readthedocs.io/en/late
 ```bash
 git clone https://github.com/tmartinezML/glori.git
 cd glori
+git switch tutorial   # the tutorials and the install fixes live on this branch
 
 micromamba env create -n glori -f environment.yml
 micromamba activate glori
 pip install -e .
 ```
 
-Note the pinned dependencies (`torch==2.2.1`, `numpy==1.25.2`, a specific `vqtorch`
-commit, etc.) — this repo is tied to fairly old, specific versions, so don't casually
-upgrade them (see "Known issues" below for what breaks if you do).
+### Alternative: uv
 
-**On a fresh machine it is necessary to change two paths in
-`glori`:** open `src/glori/settings/paths.py` and change `STORAGE_PARENT`
-to a path on your own machine, e.g. `Path.home() / "glori_storage"`.
-Every path this package uses (model checkpoints, cache, image data, ...) is derived from
-it, and the whole directory tree is created automatically the first time you import
-`glori` — but only under whatever `STORAGE_PARENT` currently points to.
+With [uv](https://docs.astral.sh/uv/) all dependencies come from `pyproject.toml`:
+
+```bash
+git clone https://github.com/tmartinezML/glori.git
+cd glori
+git switch tutorial   # the tutorials and the install fixes live on this branch
+
+uv venv --python 3.11
+source .venv/bin/activate
+uv pip install -e ".[notebooks]"
+```
+
+The `notebooks` extra adds `ipykernel`, which the tutorial notebooks need; leave it out
+if you only use the package from scripts. Python must be 3.11 (the pinned `numpy` and
+`torch` have no wheels for newer versions).
+
+An editable install (`-e`) is recommended, but a regular one works too: the presets from
+`configs/` are then shipped inside the package. Either run `uv pip install ".[notebooks]"`
+in the clone (on the `tutorial` branch), or install straight from GitHub without cloning.
+The part after the last `@` selects the branch:
+
+```bash
+uv pip install "glori[notebooks] @ git+https://github.com/tmartinezML/glori.git@tutorial"
+```
+
+### Set the storage directory
+
+On a fresh machine you have to point `glori` to a storage directory of your own.
+Either set the environment variable `GLORI_STORAGE_PARENT` before importing `glori`:
+
+```bash
+export GLORI_STORAGE_PARENT=$HOME/glori_storage
+```
+
+or open `src/glori/settings/paths.py` and change `STORAGE_PARENT` there (only possible
+with an editable install). Every path this package uses (model checkpoints, cache, image
+data, ...) is derived from it, and the whole directory tree is created automatically the
+first time you import `glori` — but only under whatever `STORAGE_PARENT` currently
+points to.
 
 ## Storage locations
 
@@ -326,8 +358,8 @@ per 2048 px map and runs while the next batch is sampled.
 ## Known issues / gotchas
 
 - **`STORAGE_PARENT`** in `settings/paths.py` is hardcoded to the original author's
-  cluster path. Change it for your own setup (see "Installation"/"Storage locations"
-  above), or use the explicit-checkpoint-path pattern above to bypass it entirely for
+  cluster path. Change it for your own setup or set `GLORI_STORAGE_PARENT` (see
+  "Installation"/"Storage locations" above), or use the explicit-checkpoint-path pattern above to bypass it entirely for
   inference. The directory tree under it is created automatically on import, so you
   don't need to `mkdir` anything yourself once it points somewhere valid — but on a
   fresh machine you do need to change it *before* the first `import glori...`, or the
