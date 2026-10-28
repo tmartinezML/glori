@@ -164,6 +164,7 @@ latent size 128px):
 |---|---|---|
 | VQ-VAE | `VQ-VAE-256-DR3opt-FT` | image <-> latent compression, downsampling factor 4 |
 | Denoiser | `LDM-Denoiser-WnetCC-v5` | catalog-context-conditioned diffusion U-Net |
+| Denoiser (noise-conditioned) | `LDM-Denoiser-WnetCC-rms-v1` | as v5, plus a local-noise context channel; used by the noise-band tools below (`download_pretrained("denoiser-rms")`) |
 
 Public download: **[huggingface.co/astrokevin/glori-ldm-swiit](https://huggingface.co/astrokevin/glori-ldm-swiit)**.
 (Stripped-down, inference-only versions of these checkpoints — weights only, no optimizer
