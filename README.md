@@ -138,12 +138,12 @@ Public download: **[huggingface.co/astrokevin/glori-ldm-swiit](https://huggingfa
 state — are prepared with `scripts/release/strip_checkpoint.py`.)
 
 **License:** the pretrained weights are released under **CC BY-SA 4.0**, separately from
-this repo's MIT-licensed code. Both models were trained on [LoTSS-DR2](https://lofar-surveys.org/dr2_release.html)
-data, which is itself CC BY-SA 3.0 — the share-alike clause carries over to derivative
+this repo's MIT-licensed code. The models were trained on [LoTSS-DR3](https://lofar-surveys.org/dr3.html)
+data, which is itself [CC BY-SA 3.0](https://vo.astron.nl/lotss_dr3/q/src_cone/howtocite) — the share-alike clause carries over to derivative
 works like these weights, so if you build on them (fine-tune, redistribute, etc.), your
 result needs to stay under a compatible CC BY-SA license too. If you use the weights,
-please cite both the paper above and Shimwell et al. (2022), *"The LOFAR Two-metre Sky
-Survey. V. Second data release"*, A&A, [10.1051/0004-6361/202142484](https://doi.org/10.1051/0004-6361/202142484).
+please cite both the paper above and Shimwell et al. (2026), *"The LOFAR Two-metre Sky
+Survey. VII. Third data release"*, A&A 707, A198, [10.1051/0004-6361/202557749](https://doi.org/10.1051/0004-6361/202557749).
 
 For inference, you don't need to place checkpoints under `STORAGE_PARENT` at all — every
 sampler accepts an explicit file path in place of a symbolic checkpoint name. See the
@@ -185,6 +185,144 @@ For the full walkthrough — including catalog-conditioned generation (controlli
 sources appear), sampling larger maps, and understanding the sampling parameters — see
 [`tutorials/tutorial_getting_started.ipynb`](tutorials/tutorial_getting_started.ipynb).
 
+## Test images in a noise band (for source finders)
+
+`scripts/generate_noise_images.py` generates LOFAR-like 512x512 px images (1.5" px,
+6" beam, 144 MHz, Jy/beam) whose noise lies in a requested band, together with the
+catalog of the sources put into them:
+
+```bash
+python scripts/generate_noise_images.py --noise 40-55 --n 100 --out noise_40-55 --gpu 0
+```
+
+or from Python:
+
+```python
+from glori.inference.noise_sampler import NoiseBandSampler
+NoiseBandSampler(device="cuda:0").sample(40, 55, n=100, out_dir="noise_40-55")
+```
+
+**Requirements.** One GPU, a working PyBDSF (`bdsf`) installation and internet access.
+On first use, the noise-conditioned denoiser (`LDM-Denoiser-WnetCC-rms-v1`), the VQ-VAE,
+the scaler and two small LoTSS-DR3 derived files (source properties for the synthetic
+sources, a list of field centres) are downloaded from
+[huggingface.co/astrokevin/glori-ldm-swiit](https://huggingface.co/astrokevin/glori-ldm-swiit)
+and cached; set `GLORI_PRETRAINED_DIR` to a local copy of that repository to use it instead
+(on the group cluster: `/hs/fs08/data/group-brueggen/kevin/glori_paper_release`). Source
+catalogs are queried from the public [LoTSS-DR3 cone search](https://vo.astron.nl/lotss_dr3/q/src_cone/info)
+for every image, a few at a time.
+
+**Noise** is the median of the PyBDSF rms map with the LoTSS settings of
+`glori.analysis.bdsf_analysis.DEFAULT_KWARGS`. Every written image has a noise inside
+the band (stored as `NOISE` in the FITS header), drawn log-uniformly over it.
+
+**Valid range: 40–224 µJy/beam.** Requests outside it are refused. The range is the one in
+which the calibration (`configs/noise_calibration/rms-v1.json`, 96 cutouts x 23 depths,
+3000 real DR3 cutouts as reference) found every criterion met: the noise rises with the
+requested depth, the noise texture and artefacts look like real DR3 cutouts of the same
+noise, bright input sources are recovered, and source fluxes stay consistent within 10 %.
+Below ~37 µJy/beam the model cannot go deeper. Above ~224 µJy/beam the noise still rises
+(up to ~370 µJy/beam tested) with consistent fluxes, but bright sources are missed slightly
+more often than the criterion allows and real reference cutouts become sparse. Real 6"
+DR3 cutouts span ~55–200 µJy/beam (5–95 %).
+
+**How an image is made.** The model (`LDM-Denoiser-WnetCC-rms-v1`) reads the depth of
+an image mostly from its input catalog, so each image gets a catalog consistent with a
+depth T: the real sources of a random DR3 field (centres drawn uniformly over the
+survey footprint) above its completeness limit (8x its native noise), plus synthetic faint sources with DR3-like SNR, sizes and
+total/peak ratios down to the depth T, in DR3-like numbers. T comes from the calibration
+so that the generated noise is close to the requested one; the image is then measured
+with PyBDSF and rescaled to the requested noise exactly. PyBDSF results scale linearly
+with the image, and the model scales sources and noise together, so the rescale
+(typically within ±15 %, at most x1.3) changes the flux scale only, not the LOFAR noise
+texture. Images that would need a larger rescale, whose noise texture falls outside
+the range of real DR3 cutouts, or that miss bright input sources are dropped and
+regenerated (`report.json` counts them).
+
+**Output** in `--out`:
+
+| File | Content |
+|---|---|
+| `images/img_#####.fits` | image [Jy/beam]; header: `NOISE` [µJy/beam], `RESCALE`, `DEPTH` (T), `FIELDRA`/`FIELDDEC` (DR3 field of the real sources), `CODEVER` (git commit of the code) |
+| `truth_catalog.csv` | all input sources per `image_id`: `x_px`, `y_px` (0-based, x = column), `peak_flux`, `total_flux` [Jy], `maj_arcsec`, `synthetic` |
+| `pybdsf_catalog.csv` | PyBDSF sources of each image (same pixel convention) |
+| `summary.csv`, `report.json` | one row per image (noise, rescale, texture metrics), and the run: request, rejections, runtime |
+
+**Known limitations of the truth catalog**
+- Positions are on the 4 px grid of the catalog context (6"), and generated sources sit
+  ~2–3 px (3–4.5") off their catalog position; match with a radius of ~12".
+- `peak_flux`/`total_flux` are the input fluxes times the calibrated image flux factor.
+  The PyBDSF peak flux of single sources (>= 20 sigma) scatters by ~±25 % around it; per
+  image the median ratio is 0.94–1.01 across the range. Above ~150 µJy/beam, peak fluxes
+  of bright extended sources (Maj >= 8") come out ~10 % low.
+- Faint emission the model adds on its own (below the catalog depth) is not listed.
+
+**Resources.** One GPU (`--gpu`) and `--workers` single-core PyBDSF processes at low
+priority (default: CPU count - 2, at most 24). About 1 min per 16 images on an A100.
+
+### Large maps in a noise band
+
+`scripts/generate_noise_maps.py` makes survey-like maps of any size (default 2048x2048 px
+= 51'; 512 + k x 256 px, at least 1024) with SWIIT, the tiled sampler, from the same kind
+of depth-matched catalog:
+
+```bash
+python scripts/generate_noise_maps.py --noise 60-80 --n 8 --size 2048 --out maps_60-80 --gpu 0
+```
+
+```python
+from glori.inference.noise_map_sampler import NoiseBandMapSampler
+NoiseBandMapSampler(device="cuda:0").sample(60, 80, n=8, out_dir="maps_60-80", map_px=2048)
+```
+
+**Noise of a map** is the median of its PyBDSF rms map; each map is rescaled as a whole
+so that this median lies in the band. The noise still varies across a map: 256 px blocks
+span a factor ~1.2–1.4 (p95/p5) at low noise and ~1.4–2.0 at high noise, somewhat more
+than in real DR3 fields (~1.1–1.3). The PyBDSF rms map is therefore delivered with every
+map; use it for local SNR.
+
+**Valid range: 50–224 µJy/beam** for the map median; requests outside it are refused.
+The calibration (`configs/noise_calibration/rms-v1-swiit.json`, 8 DR3 fields of native depth
+37–87 µJy/beam x 7 depths, 2048 px) found the map noise rising with the depth in every
+field, no tile seams, ~99 % of bright input sources recovered and 85–96 % of the 512 px
+tiles with a DR3-like noise texture. Below ~50 µJy/beam only ~80 % of the tiles pass
+(striped, too anisotropic noise), so that part is excluded.
+
+**How a map is made.** Real sources come from a random DR3 field with native depth
+<= 90 µJy/beam and full survey coverage over the map and a 256 px margin (the margin is
+the context SWIIT sees beyond the map edge); the catalog is made consistent with depth T
+as for single images. Maps that would need a rescale above x1.3, whose 512 px tiles have
+a DR3-like texture in fewer than 75 % of cases, or that miss more than 20 % of the bright
+input sources are dropped and regenerated.
+
+**Fluxes.** SWIIT maps come out with source fluxes 5–20 % below the catalog, depending on
+the field. The truth catalog is therefore calibrated per map: `peak_flux`/`total_flux` are
+the input fluxes times the median measured / input peak flux of the map's own sources
+with input peak >= 20 T (`FLUXFAC` in the header; the calibrated factor of the depth is
+used if a map has fewer than 10 such sources). Checked by re-running PyBDSF on the written
+maps: sources at 20–100 sigma come out at 0.98–1.08 of the truth flux per map; sources above
+100 sigma (mostly bright extended ones) ~10 % low, with a larger scatter.
+
+**Output** in `--out`:
+
+| File | Content |
+|---|---|
+| `maps/map_#####.fits` | map [Jy/beam]; header: `NOISE` (median rms) [µJy/beam], `RESCALE`, `DEPTH` (T), `FLUXFAC`, `FIELDRA`/`FIELDDEC` (DR3 field of the real sources), `CODEVER` |
+| `maps/map_#####_rms.fits` | PyBDSF rms map of the map [Jy/beam] |
+| `truth_catalog.csv` | input sources per `map_id`: as for single images, plus `detected` (PyBDSF source within 12") |
+| `pybdsf_catalog.csv` | PyBDSF sources of each map |
+| `tiles.csv` | per 512 px tile: noise, texture metrics, `texture_ok` |
+| `summary.csv`, `report.json` | one row per map (noise, rescale, flux factor, rms spread, texture fraction, bright-source recovery), and the run |
+
+The real sources can come from anywhere in DR3, including areas whose catalogs were seen
+in training; the maps themselves are newly generated.
+
+**Resources.** Requirements as for single images; one cone search per map (checked complete
+up to 3° radius, i.e. maps up to 8192 px). One GPU and `--workers` single-core PyBDSF processes at low priority.
+Sampling 8 maps of 2048 px together (`--batch 8`) takes ~26 min on an A100 (~3.3 min per
+map; ~4.3 min per map in batches of 4); time grows with the map area. PyBDSF takes ~2–3 min
+per 2048 px map and runs while the next batch is sampled.
+
 ## Known issues / gotchas
 
 - **`STORAGE_PARENT`** in `settings/paths.py` is hardcoded to the original author's
@@ -215,4 +353,4 @@ sources appear), sampling larger maps, and understanding the sampling parameters
 
 Code: MIT (see `pyproject.toml`). Pretrained model weights: **CC BY-SA 4.0**, see
 "Pretrained models" above — this is a separate, stricter license required by the
-LoTSS-DR2 training data's own share-alike terms.
+LoTSS-DR3 training data's own share-alike terms.
